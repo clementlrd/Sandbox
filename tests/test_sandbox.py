@@ -215,7 +215,7 @@ class GitTests(unittest.TestCase):
         self.assertIn('sandbox-app-config-abcd', ' '.join(first))
         self.assertIn('sandbox-app-cache-abcd', ' '.join(first))
 
-    def test_anonymized_scans_shared_tools_and_skills(self):
+    def test_anonymized_scans_skills_not_shared_tools(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
         cfg['images'] = settings.IMAGES.copy()
@@ -233,9 +233,10 @@ class GitTests(unittest.TestCase):
              mock.patch.object(cli, 'pinned_image', return_value='sha256:' + 'b' * 64), \
              mock.patch.object(cli, 'remember_volume'), \
              mock.patch.object(cli, 'check_container') as checker:
-            cli.runtime_args(self.root, meta, cfg, 'base', ['/bin/bash'])
+            args = cli.runtime_args(self.root, meta, cfg, 'base', ['/bin/bash'])
+        self.assertIn(f'type=bind,src={tools.parent.resolve()},dst=/opt/tools,readonly', args)
         extras = checker.call_args.args[-1]
-        self.assertIn((tools.parent.resolve(), '/opt/tools'), extras)
+        self.assertNotIn((tools.parent.resolve(), '/opt/tools'), extras)
         self.assertIn((skill.resolve(), '/root/.agents/skills'), extras)
 
     def test_mount_options_and_legacy_compatibility(self):

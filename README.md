@@ -162,7 +162,7 @@ target = "/root/.config/opencode/opencode.jsonc"
 optional = true
 ```
 
-The installed template also includes `~/.claude/skills`. Generic `[[mounts]]` are read-only in **every runtime container**, not only when OpenCode happens to run. They're scanned by the preflight in anonymized sandboxes. You can mount other host configuration/skill files deliberately, but they may contain secrets. The host's entire home, SSH agent, Git config, and Docker socket are never mounted automatically. If upgrading from an older config, the previous skill and OpenCode config options remain honored even without `[[mounts]]`.
+The installed template also includes `~/.claude/skills`. Generic `[[mounts]]` are read-only in **every runtime container**, not only when OpenCode happens to run. They're scanned by the preflight in anonymized sandboxes. The host-managed shared tools directory is **not** scanned for denylist terms (to avoid matching arbitrary binary bytes), but is still mounted read-only. Only put trusted executables there; the agent can read their contents. You can mount other host configuration/skill files deliberately, but they may contain secrets. The host's entire home, SSH agent, Git config, and Docker socket are never mounted automatically. If upgrading from an older config, the previous skill and OpenCode config options remain honored even without `[[mounts]]`.
 
 ## 6. Sandbox workflow
 

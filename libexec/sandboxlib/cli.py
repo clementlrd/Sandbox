@@ -202,15 +202,16 @@ def runtime_args(path, meta, cfg, runtime, command):
     profile = image_profile(runtime)
     image = pinned_image(meta, path, profile, cfg)
     mounts = read_only_mounts(cfg)
+    if meta['anonymized']:
+        deny = denylist_path(meta['denylist'])
+        # Scan the repository and user-supplied read-only mounts (e.g. skills).
+        # Shared executable tools are host-managed and deliberately excluded.
+        check_container(meta['preparer_image'], path / 'repo', deny, list(mounts))
     if cfg['shared_tools']:
         tools = resource_dir() / 'tools'
         if not (tools / 'bin').is_dir():
             raise ValueError(f'shared tools directory missing at {tools}; rerun install.sh')
         mounts.append((tools.resolve(strict=True), '/opt/tools'))
-    if meta['anonymized']:
-        deny = denylist_path(meta['denylist'])
-        # Scan all read-only host mounts as well as the repository.
-        check_container(meta['preparer_image'], path / 'repo', deny, mounts)
     args = ['docker', 'run', '--rm', '--init', '--interactive',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
             '--memory', cfg['memory'], '--pids-limit', str(cfg['pids_limit']),
