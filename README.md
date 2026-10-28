@@ -12,6 +12,9 @@ Requirements: Linux, Python 3.11+, Git, Docker CLI + BuildKit, and a **rootless 
 
 ```bash
 ./install.sh --no-tools
+# Optional shorthand: add `alias sbx=sandbox` to ~/.bashrc or ~/.zshrc.
+alias sbx=sandbox
+
 sandbox build preparer
 sandbox build base
 
@@ -98,6 +101,20 @@ sandbox run experiment --setup opencode-openai
 
 Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**, and must be reviewed before use. See [Configuration](docs/configuration.md) and [Security](docs/security.md).
 
+## Check before publishing
+
+Use your private denylist to scan the repository's working files, paths, Git
+history, and stored Git objects **before pushing it to GitHub**:
+
+```bash
+sandbox audit . --denylist ~/.config/sandbox/denylist.txt
+```
+
+It reports matching term numbers rather than printing the sensitive terms and
+exits nonzero on a match. This is a *literal-term check*, not a general-purpose
+secret scanner; binary files can also produce false positives. Review the
+[publication checklist](docs/publication-checklist.md) for other checks.
+
 ## Documentation
 
 - [Installation and lifecycle](docs/quickstart.md)
@@ -107,7 +124,8 @@ Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**,
 - [Security and privacy limitations](docs/security.md)
 - [Uninstall and data cleanup](docs/uninstall.md)
 - [Development and testing](docs/development.md)
-- [Release-readiness checklist](docs/release-readiness.md)
+- [Publication checklist](docs/publication-checklist.md)
+- [GitHub Actions CI explained](docs/ci.md)
 
 ## Development
 

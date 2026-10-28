@@ -13,6 +13,7 @@ import uuid
 from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
+from .preflight import scan as scan_repository
 from .settings import read_only_mounts, load
 
 
@@ -120,6 +121,22 @@ def check_container(image, repo, deny, extras):
     for index in range(len(extras)):
         args += ['--extra', f'/extras/{index}']
     call(args)
+
+
+def command_audit(args, cfg):
+    """Scan a real repository for denylisted terms before publishing it.
+
+    Unlike the sandbox preflight, real histories and configured remotes are
+    expected; their contents are still scanned. No Docker daemon is needed.
+    """
+    candidate = Path(args.repository).expanduser().resolve(strict=True)
+    env = git_env(anonymized=False)
+    root = Path(git_text(candidate, 'rev-parse', '--show-toplevel', env=env)).resolve(strict=True)
+    if not (root / '.git').is_dir():
+        raise ValueError('audit requires a regular Git checkout with a .git directory')
+    deny = denylist_path(args.denylist)
+    scan_repository(root, deny, enforce_identity=False, require_no_remotes=False)
+    print(f'Audit passed: {root}')
 
 
 def command_create(args, cfg):
@@ -453,6 +470,10 @@ def command_build(args, cfg):
 def parser():
     p = argparse.ArgumentParser(prog='sandbox', description='Named isolated Git workspaces (rootless Docker)')
     sub = p.add_subparsers(dest='operation', required=True)
+    audit = sub.add_parser('audit', help='scan a real repository and its Git objects using a private denylist')
+    audit.add_argument('repository', nargs='?', default='.', help='Git checkout (default: current directory)')
+    audit.add_argument('--denylist', help='alternate private denylist file (chmod 600)')
+    audit.set_defaults(handler=command_audit)
     create = sub.add_parser('create', help='create an independent Git sandbox')
     create.add_argument('name')
     create.add_argument('source')

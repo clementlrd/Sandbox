@@ -27,6 +27,15 @@ bash -n install.sh tools/install-opencode.sh recipes/*.sh
 
 These tests cover configuration, Git history preparation/import, preflight, CLI argument construction, recipe confirmation and simulated pip reuse. Many tests execute *real local Git* operations. They do **not** launch rootless Docker or exercise a real GPU; those still need a separate integration test on Linux.
 
+## GitHub Actions continuous integration
+
+The repository includes [`.github/workflows/tests.yml`](../.github/workflows/tests.yml).
+It automatically runs syntax checks and the Python/Git test suite on pushes
+and pull requests, using Python 3.11, 3.12, and 3.13 on GitHub-hosted Ubuntu
+runners. It does **not** run Docker, rootless isolation, or GPU integration
+checks; see [CI guide](ci.md). No repository secrets or custom runner are
+required for these tests.
+
 ## Reproduce manually on Linux
 
 Use a disposable, synthetic Git repository rather than your private source for the first end-to-end test.
@@ -57,6 +66,6 @@ The installer preserves user-maintained configuration, denylist and recipes. New
 
 ## Roadmap
 
-See [release-readiness](release-readiness.md). High-value next tasks: true rootless Docker end-to-end tests, a documented threat model reviewed by a second maintainer, improved cleanup/recovery, and more robust imported Git metadata/submodules/LFS handling. Avoid adding an app-specific plugin system unless a concrete repeated use case justifies it.
+See [publication checklist](publication-checklist.md). High-value next tasks: true rootless Docker end-to-end tests, a documented threat model reviewed by a second maintainer, improved cleanup/recovery, and more robust imported Git metadata/submodules/LFS handling. Avoid adding an app-specific plugin system unless a concrete repeated use case justifies it.
 
 Test the strict configuration parser and generic runtime build resolution whenever those interfaces change.

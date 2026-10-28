@@ -30,6 +30,17 @@ The installer replaces its managed code/build resources. It installs the `sandbo
 
 Ensure `~/.local/bin` is in `PATH`. The installer does not need sudo.
 
+For shorter interactive commands, optionally add this line to your
+`~/.bashrc` or `~/.zshrc`, then reload the shell:
+
+```bash
+alias sbx=sandbox
+```
+
+For example, `sbx create dev ~/projects/my-repo` and `sbx run dev` are
+identical to their `sandbox` equivalents. Shell aliases only affect shells
+where the alias is defined; scripts should still call `sandbox` directly.
+
 To uninstall later, see [Uninstall](uninstall.md).
 
 ## Prepare images explicitly

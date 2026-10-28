@@ -1,4 +1,4 @@
-"""Fail-closed content screening; run in the trusted preparer, never in OpenCode."""
+"""Fail-closed screening for sandbox preparation and host publication audits."""
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -10,7 +10,8 @@ CHUNK = 1024 * 1024
 MAX_REPORT = 25
 
 
-def scan(repo: Path, denylist: Path, extra_paths=(), enforce_identity=True):
+def scan(repo: Path, denylist: Path, extra_paths=(), enforce_identity=True,
+         require_no_remotes=True):
     repo = Path(repo).resolve(strict=True)
     denylist = Path(denylist).resolve(strict=True)
     if not (repo / '.git').is_dir():
@@ -24,11 +25,12 @@ def scan(repo: Path, denylist: Path, extra_paths=(), enforce_identity=True):
     needles = [t.strip().casefold() for t in denylist.read_text(encoding='utf-8').splitlines()
                if t.strip() and not t.lstrip().startswith('#')]
     if not needles:
-        raise ValueError('denylist has no active entries; refusing anonymized run')
+        raise ValueError('denylist has no active entries; refusing scan')
     env = git_env()
-    remotes = subprocess.check_output(['git', '-C', str(repo), 'remote'], env=env)
-    if remotes.strip():
-        raise ValueError('sandbox repository must not have configured Git remotes')
+    if require_no_remotes:
+        remotes = subprocess.check_output(['git', '-C', str(repo), 'remote'], env=env)
+        if remotes.strip():
+            raise ValueError('sandbox repository must not have configured Git remotes')
     if enforce_identity:
         raw = subprocess.check_output(['git', '-C', str(repo), 'log', '--all',
              '--format=%an%x00%ae%x00%cn%x00%ce'], env=env)
