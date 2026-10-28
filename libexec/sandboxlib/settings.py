@@ -17,7 +17,7 @@ SETUP_DEFAULT = {
     'recipes_dir': '~/.config/sandbox/recipes',
     'confirm_host_execution': True,
 }
-RUNTIME_FIELDS = {'image', 'shell', 'devices', 'venv_volume', 'dockerfile', 'context'}
+RUNTIME_FIELDS = {'image', 'shell', 'devices', 'gpus', 'venv_volume', 'dockerfile', 'context'}
 RUNTIME_NAME = re.compile(r'[a-z][a-z0-9-]{0,39}\Z')
 
 
@@ -68,7 +68,7 @@ def load():
         if not isinstance(entry, dict) or set(entry) - RUNTIME_FIELDS or 'image' not in entry:
             raise ValueError(f'runtime {name!r} needs image and only supported fields')
         rt = {
-            'image': None, 'shell': '/bin/bash', 'devices': [],
+            'image': None, 'shell': '/bin/bash', 'devices': [], 'gpus': None,
             'venv_volume': False, 'dockerfile': None, 'context': None,
         }
         rt.update(entry)
@@ -86,6 +86,12 @@ def load():
                     '..' in PurePosixPath(dev).parts or '\n' in dev for dev in devices) or
                 len(set(devices)) != len(devices)):
             raise ValueError(f'invalid device paths for runtime {name!r}')
+        # NVIDIA GPUs require Docker's --gpus/NVIDIA Container Toolkit, not
+        # the bare character-device passthrough used by Intel /dev/dri.
+        gpus = rt['gpus']
+        if gpus is not None and (not isinstance(gpus, str) or
+                not re.fullmatch(r'(?:all|[1-9][0-9]*|device=(?:[0-9]+|GPU-[A-Za-z0-9-]+))', gpus)):
+            raise ValueError(f'invalid gpus for runtime {name!r}; use all, a count, or device=0')
         for option in ('dockerfile', 'context'):
             if rt[option] is not None and (not isinstance(rt[option], str) or
                     not rt[option].strip() or '\n' in rt[option]):

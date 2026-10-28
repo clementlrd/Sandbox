@@ -36,6 +36,51 @@ class RuntimeProfiles(unittest.TestCase):
                 dockerfile = (project / 'images' / profile / 'Dockerfile').read_text()
                 self.assertRegex(dockerfile, r'\bripgrep less jq tmux\b')
 
+    def test_bundled_cuda_image_and_shared_venv_layout(self):
+        project = Path(__file__).resolve().parents[1]
+        dockerfile = (project / 'images/python-cuda/Dockerfile').read_text()
+        self.assertIn('nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04', dockerfile)
+        self.assertIn("'torch==2.9.1'", dockerfile)
+        self.assertIn('/opt/venv', dockerfile)
+        self.assertIn('--mount=type=cache,target=/root/.cache/pip', dockerfile)
+        self.assertIn('images/shared/sandbox-venv', dockerfile)
+        self.assertTrue((project / 'images/shared/sandbox-venv').is_file())
+        xpu_dockerfile = (project / 'images/python-xpu/Dockerfile').read_text()
+        self.assertIn('images/shared/sandbox-venv', xpu_dockerfile)
+
+    def test_cuda_runtime_profile_is_generic_and_adds_docker_gpu_request(self):
+        cfg = self.load_text('''
+[sandbox]
+default_runtime = "cuda"
+shared_tools = false
+[runtimes.cuda]
+image = "example/cuda:v1"
+shell = "/bin/bash"
+venv_volume = true
+gpus = "all"
+''')
+        self.assertEqual(cfg['runtimes']['cuda']['gpus'], 'all')
+        meta = {'id': 'abcdef', 'name': 'custom', 'anonymized': False,
+                'runtime_images': {}, 'volumes': []}
+        with mock.patch.object(cli, 'pinned_image', return_value='sha256:'+'a'*64), \
+             mock.patch.object(cli, 'remember_volume'):
+            args = cli.runtime_args(self.root, meta, cfg, 'cuda', ['nvidia-smi'])
+        self.assertEqual(args[args.index('--gpus') + 1], 'all')
+        self.assertNotIn('--device', args)
+        self.assertIn('/opt/venvs', ' '.join(args))
+        self.assertEqual(args[-1], 'nvidia-smi')
+
+    def test_gpu_selection_validated_without_affecting_device_path_behavior(self):
+        for gpus in ('all', '1', '2', 'device=0', 'device=GPU-abc123'):
+            with self.subTest(gpus=gpus):
+                cfg = self.load_text(f'[runtimes.node]\nimage="example/node:22"\ngpus="{gpus}"\n')
+                self.assertEqual(cfg['runtimes']['node']['gpus'], gpus)
+        for value in ('[]', 'false', '"none"', '"--privileged"', '"device=0,1"', '"0"'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.load_text(f'[runtimes.node]\nimage="example/node:22"\ngpus={value}\n')
+        cfg = self.load_text('[runtimes.node]\nimage="example/node:22"\n')
+        self.assertIsNone(cfg['runtimes']['node']['gpus'])
+
     def test_custom_image_profile_without_build_file(self):
         cfg = self.load_text('''
 [runtimes.node]

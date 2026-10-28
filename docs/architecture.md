@@ -44,7 +44,7 @@ Each `run` or `exec` launches a new, short-lived Docker container. The manager e
 
 For anonymized sandboxes, a preparer preflight runs again before an application container starts. It checks the workspace and configured read-only mounts. It does not inspect globally shared tools binaries or the contents of previously persisted application data/venv volumes. See [Security](security.md) for why that matters.
 
-Application data is **not tied to a runtime**: one sandbox's app volumes are shared by its `base`, `python-xpu` and custom runtimes. Python venv volumes **are tied to the exact image ID**, because interpreter paths and native package ABIs are generally not portable between images. Distinct profiles that reference the same image ID may share that venv volume.
+Application data is **not tied to a runtime**: one sandbox's app volumes are shared by its `base`, `python-xpu`, `python-cuda`, and custom runtimes. Python venv volumes **are tied to the exact image ID**, because interpreter paths and native package ABIs are generally not portable between images. Distinct profiles that reference the same image ID may share that venv volume.
 
 ## Import
 

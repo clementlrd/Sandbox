@@ -8,6 +8,8 @@ libexec/sandboxlib/            # CLI, config, Git preparation/preflight/import
 images/preparer/               # trusted no-network preparation worker
 images/base/                   # optional general-purpose Ubuntu runtime
 images/python-xpu/             # optional Intel XPU example runtime
+images/python-cuda/            # optional NVIDIA CUDA example runtime
+images/shared/                 # base-PyTorch venv helper reused by GPU images
 examples/config.toml           # default config, runtime examples
 recipes/                       # trusted host-side setup scripts
 tools/                         # sandbox-py and optional OpenCode installer

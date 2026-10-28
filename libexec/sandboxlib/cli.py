@@ -251,6 +251,8 @@ def runtime_args(path, meta, cfg, runtime, command):
         name = volume_name(meta, suffix)
         remember_volume(meta, path, name)
         args += ['--mount', f'type=volume,src={name},dst={dest}']
+    if definition.get('gpus') is not None:
+        args += ['--gpus', definition['gpus']]
     for device in definition['devices']:
         if not Path(device).is_char_device():
             raise ValueError('runtime device is missing or not a character device: ' + device)

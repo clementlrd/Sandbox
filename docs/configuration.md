@@ -30,7 +30,7 @@ This is not an application runtime. `sandbox build preparer` builds its packaged
 
 ## Explicit runtime profiles
 
-**Every runtime is declared explicitly**, even bundled examples. There is no automatic or special-case `base`/`python-xpu` selection.
+**Every runtime is declared explicitly**, even bundled examples. There is no runtime-name-specific behavior.
 
 ```toml
 [runtimes.base]
@@ -50,7 +50,7 @@ dockerfile = "bundled:images/python-xpu/Dockerfile"
 context = "bundled:."
 ```
 
-Runtime names are lower-case and may contain digits and hyphens. Only `image` is required; defaults are `shell = "/bin/bash"`, `devices = []`, `venv_volume = false`, `dockerfile = null` and `context = null`. User-supplied profiles need no changes to sandbox code:
+An optional NVIDIA example is also included in [the configuration template](../examples/config.toml): `python-cuda` uses `gpus = "all"` and a bundled CUDA/PyTorch Dockerfile. Runtime names are lower-case and may contain digits and hyphens. Only `image` is required; defaults are `shell = "/bin/bash"`, `devices = []`, `gpus` disabled, `venv_volume = false`, `dockerfile = null` and `context = null`. User-supplied profiles need no changes to sandbox code:
 
 ```toml
 [runtimes.node]
@@ -61,7 +61,7 @@ venv_volume = false
 
 For local builds, set `dockerfile` and optionally `context`. Ordinary relative paths are relative to the sandbox configuration directory. A `bundled:` path resolves under the installed `${XDG_DATA_HOME:-$HOME/.local/share}/sandbox` resources; it cannot escape that directory. A runtime without a Dockerfile must be built or pulled separately. No builds run implicitly. See [Runtime guide](runtimes.md).
 
-Devices are passed via Docker `--device` with their numeric host groups. This does not guarantee access under rootless Docker; check ACLs and user namespace mappings. Do not expose a Docker socket or unnecessary devices.
+Devices are passed via Docker `--device` with their numeric host groups. NVIDIA GPU requests use the optional `gpus = "all"` (Docker `--gpus all`) instead; this requires the host NVIDIA driver and NVIDIA Container Toolkit configured for rootless Docker. Neither mechanism guarantees access on every host; check ACLs, user namespaces, toolkit configuration, and GPU driver compatibility. Do not expose a Docker socket or unnecessary devices. See [CUDA setup](runtimes.md#nvidia-cuda-and-rootless-docker).
 
 The `/opt/venvs` volume is created only if `venv_volume = true` and is keyed to both the named sandbox and the **image ID**. Application data/config/cache volumes are per sandbox across all runtimes. The repository is per sandbox. Shared tools are read-only and global.
 

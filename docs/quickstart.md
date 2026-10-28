@@ -37,11 +37,12 @@ To uninstall later, see [Uninstall](uninstall.md).
 ```bash
 sandbox build preparer
 sandbox build base
-# Optional only if using Intel XPU:
-sandbox build python-xpu
+# Optional accelerator profiles: build only those you actually need.
+sandbox build python-xpu      # Intel GPU
+sandbox build python-cuda     # NVIDIA GPU, requires host NVIDIA toolkit
 ```
 
-`create`, `run`, `exec`, `setup` and `import` never build images. The `base` and `python-xpu` images include `jq` and `tmux`. After building, verify with `sandbox exec dev -- jq --version` and `sandbox exec dev -- tmux -V`. `tmux` servers do not survive the removal of an ephemeral container. Their profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. See [Runtimes](runtimes.md) for third-party images and caching.
+`create`, `run`, `exec`, `setup` and `import` never build images. The `base`, `python-xpu`, and `python-cuda` images include `jq` and `tmux`. After building, verify with `sandbox exec dev -- jq --version` and `sandbox exec dev -- tmux -V`. `tmux` servers do not survive the removal of an ephemeral container. Their profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. NVIDIA CUDA users must configure the host toolkit first (see [CUDA setup](runtimes.md#nvidia-cuda-and-rootless-docker)). See [Runtimes](runtimes.md) for third-party images and caching.
 
 ## Create a named sandbox
 

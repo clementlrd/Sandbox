@@ -29,6 +29,17 @@ devices = []                      # e.g. ["/dev/dri/renderD128"]
 dockerfile = "bundled:images/python-xpu/Dockerfile"
 context = "bundled:."
 
+# Optional NVIDIA GPU / CUDA + PyTorch example. Not built unless requested.
+# Requires a host NVIDIA driver and the NVIDIA Container Toolkit configured
+# for the currently selected rootless Docker daemon.
+[runtimes.python-cuda]
+image = "sandbox/python-cuda:v1"
+shell = "/bin/bash"
+venv_volume = true
+gpus = "all"                        # Docker --gpus all (NVIDIA toolkit)
+dockerfile = "bundled:images/python-cuda/Dockerfile"
+context = "bundled:."
+
 # Third-party runtimes may omit dockerfile/context and use an already built image:
 # [runtimes.node]
 # image = "node:22-bookworm"

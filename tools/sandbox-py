@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage persistent per-sandbox Python venvs without replacing base XPU torch.
+"""Manage persistent per-sandbox Python venvs without replacing base torch.
 
 Runs *inside* a sandbox, where /opt/venvs is a Docker volume. No uv or
 custom dependency solver: pip resolves requirements from pyproject.toml.
@@ -119,7 +119,7 @@ def ensure_env(path, project):
     if base_info and base_info.get('torch'):
         creator = shutil.which('sandbox-venv')
         if not creator:
-            error('XPU base detected but sandbox-venv is unavailable')
+            error('base PyTorch detected but sandbox-venv is unavailable')
         run([creator, path.name])
         base = BASE_PYTHON
     else:

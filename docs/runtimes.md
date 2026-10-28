@@ -1,6 +1,6 @@
 # Bring your own runtime
 
-`sandbox` does not need to know which applications you run. A runtime is a **named Docker image selection plus a small amount of execution configuration**. The two supplied runtime profiles, `base` and `python-xpu`, are examples; both include `jq` and `tmux` in their image layers.
+`sandbox` does not need to know which applications you run. A runtime is a **named Docker image selection plus a small amount of execution configuration**. The bundled `base`, `python-xpu` (Intel) and `python-cuda` (NVIDIA) profiles are examples. Each image recipe includes common development utilities such as `jq` and `tmux`; only build what you need.
 
 ## 1. Use an existing image
 
@@ -54,7 +54,7 @@ sandbox build node
 sandbox run dev --runtime node
 ```
 
-You may also build externally and specify only the resulting image tag. Dockerfile/context settings are **optional**. Relative `dockerfile` and `context` paths are resolved from the user's sandbox config directory. For custom runtime builds, an omitted `context` defaults to the Dockerfile's parent directory. The example `base` and `python-xpu` profiles use explicit `bundled:` build paths in the example configuration. `sandbox build preparer` builds the separate Git preparation image.
+You may also build externally and specify only the resulting image tag. Dockerfile/context settings are **optional**. Relative `dockerfile` and `context` paths are resolved from the user's sandbox config directory. For custom runtime builds, an omitted `context` defaults to the Dockerfile's parent directory. The bundled example profiles use explicit `bundled:` build paths in the example configuration. `sandbox build preparer` builds the separate Git preparation image.
 
 **Never set your personal home directory or your private Git repository as a build context.** A Dockerfile can accidentally copy sensitive context files into its layers. Keep build contexts small with a `.dockerignore`.
 
@@ -87,6 +87,48 @@ The launcher exposes only those device nodes via Docker `--device` and adds thei
 
 For an ordinary non-Python runtime, use `venv_volume = false` to avoid unnecessary `/opt/venvs` volume creation. A generic runtime doesn't need PyTorch. The `sandbox-py` helper is optional; its special inheritance mode is intended for images containing a base Python/PyTorch environment.
 
+### NVIDIA CUDA and rootless Docker
+
+The optional `python-cuda` profile uses NVIDIA's versioned CUDA + cuDNN image and installs a pinned, CUDA-enabled PyTorch into `/opt/venv`, just like the Intel XPU example. It uses **Docker `--gpus all`**, not the `/dev/dri` node mechanism. This requires the **NVIDIA GPU driver on the host** plus [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) configured for the *rootless* Docker daemon. The host driver must be compatible with the container CUDA version.
+
+NVIDIA's documented rootless setup (after installing the driver and toolkit) includes:
+
+```bash
+nvidia-ctk runtime configure --runtime=docker \
+  --config="$HOME/.config/docker/daemon.json"
+systemctl --user restart docker
+sudo nvidia-ctk config --set nvidia-container-cli.no-cgroups --in-place
+```
+
+**Inspect these commands before running them.** The last command changes system-wide NVIDIA runtime configuration and may affect other container workloads. Also verify that your rootless Docker context is active. Test the driver/toolkit *before* trying sandbox:
+
+```bash
+docker run --rm --gpus all \
+  nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 nvidia-smi
+```
+
+If that succeeds, use the explicitly configured runtime:
+
+```toml
+[runtimes.python-cuda]
+image = "sandbox/python-cuda:v1"
+shell = "/bin/bash"
+venv_volume = true
+gpus = "all"  # or "device=0" for one NVIDIA GPU
+dockerfile = "bundled:images/python-cuda/Dockerfile"
+context = "bundled:."
+```
+
+```bash
+sandbox build python-cuda
+sandbox exec dev --runtime python-cuda -- \
+  python -c 'import torch; print(torch.cuda.is_available())'
+```
+
+A `True` result indicates PyTorch sees a CUDA device. Without an NVIDIA GPU, the image may build but GPU checks will return `False`. The bundled example uses CUDA **12.6** with PyTorch **2.9.1** (`cu126`); adjust and pin both together if your driver/requirements differ. PyTorch and CUDA dependencies are downloaded **once during the explicit image build** and reused by Docker layers. This example has not been end-to-end tested on NVIDIA hardware in this project.
+
+The `gpus` runtime property is optional and defaults to disabled. It accepts `"all"`, a positive count (such as `"1"`), or a single device selection (e.g. `"device=0"`). `devices = ["/dev/dri/renderD128"]` is independent and remains appropriate for Intel/DRM devices. Don't pass raw NVIDIA device paths as a substitute for Toolkit configuration.
+
 ## 5. Caching and disk usage
 
 `docker build` runs with BuildKit and `--progress=plain` by default. Builds are always explicit. BuildKit can reuse unchanged image layers and support cache mounts in your Dockerfile. Choose versioned/digest-pinned base images, place rarely changed package installation steps before source changes, use cache mounts for expensive downloads, and keep the build context small. The Git checkout is **never** copied into the packaged runtime image recipes.
@@ -105,4 +147,4 @@ References: [Docker BuildKit](https://docs.docker.com/build/buildkit/), [Docker 
 
 ## 6. No implicit built-in runtime logic
 
-The example profiles `base` and `python-xpu` are normal entries in `config.toml`, exactly like third-party profiles. You can rename, remove, or replace them. `sandbox build NAME` uses the `dockerfile` and `context` declared in each profile; `sandbox build preparer` remains a separate reserved core command. See [Configuration](configuration.md).
+The example profiles `base`, `python-xpu`, and `python-cuda` are normal entries in `config.toml`, exactly like third-party profiles. You can rename, remove, or replace them. `sandbox build NAME` uses the `dockerfile` and `context` declared in each profile; `sandbox build preparer` remains a separate reserved core command. See [Configuration](configuration.md).

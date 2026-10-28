@@ -36,7 +36,7 @@ Application auth/session state persists in sandbox-specific volumes. This makes 
 
 ## Docker and GPU security
 
-Rootless Docker executes the daemon and containers without host root privileges; it is not equivalent to a microVM. Runtime device passthrough exposes additional host device interfaces, and rootless GPU group/ACL mappings can differ by host. `--cap-drop ALL`, `--security-opt no-new-privileges`, memory and PID limits are defense in depth, not a promise that a malicious workload is safe.
+Rootless Docker executes the daemon and containers without host root privileges; it is not equivalent to a microVM. Runtime device passthrough exposes additional host device interfaces; NVIDIA `--gpus` requests additionally require a host driver and configured NVIDIA Container Toolkit. Rootless GPU device/ACL mappings can differ by host. `--cap-drop ALL`, `--security-opt no-new-privileges`, memory and PID limits are defense in depth, not a promise that a malicious workload is safe.
 
 The current CLI runs containers as UID 0 inside the *rootless user namespace*, sets `HOME=/root` and supports only Linux-compatible images with a functional `/bin/sh`. It is not yet designed to support every `USER`, entrypoint, distro or GPU configuration.
 
