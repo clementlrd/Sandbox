@@ -1,4 +1,4 @@
-"""Fail-closed screening for prepared anonymized sandbox repositories."""
+"""One-time screening of freshly prepared anonymized Git repositories."""
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -10,7 +10,7 @@ CHUNK = 1024 * 1024
 MAX_REPORT = 25
 
 
-def scan(repo: Path, denylist: Path | None, extra_paths=(), skip_denylist=False):
+def scan(repo: Path, denylist: Path | None, *, skip_denylist=False):
     repo = Path(repo).resolve(strict=True)
     if not skip_denylist:
         if denylist is None:
@@ -122,11 +122,6 @@ def scan(repo: Path, denylist: Path | None, extra_paths=(), skip_denylist=False)
                 with item.open('rb') as f:
                     check_stream(f, None, 'file', f'{label}/{safe_label}')
     walk(repo, 'workspace')
-    for i, target in enumerate(extra_paths):
-        target = Path(target)
-        if not target.exists() and not target.is_symlink():
-            raise ValueError('missing mounted path')
-        walk(target, f'extra#{i + 1}')
     if hits:
-        raise ValueError(f'{hits} denylist match(es); sandbox launch blocked')
-    print(f'PASS: {len(needles)} terms checked against Git objects, workspace and mounts')
+        raise ValueError(f'{hits} denylist match(es); sandbox creation blocked')
+    print(f'PASS: {len(needles)} terms checked against prepared Git objects and workspace')

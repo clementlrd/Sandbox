@@ -78,7 +78,7 @@ class GitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'denylist match'):
             preflight.scan(other, self.denylist)
 
-    def test_preflight_denies_skill_content_and_nonsynthetic_commit(self):
+    def test_preflight_denies_workspace_content_and_nonsynthetic_commit(self):
         commit(self.original, 'start')
         with self.assertRaisesRegex(ValueError, 'non-synthetic'):
             preflight.scan(self.original, self.denylist)
@@ -90,11 +90,9 @@ class GitTests(unittest.TestCase):
         cmd(other, 'config', 'user.name', 'Sandbox')
         cmd(other, 'config', 'user.email', 'sandbox@invalid')
         commit(other, 'start', extra=self.anon)
-        skills = self.root / 'skills'
-        skills.mkdir()
-        (skills / 'SKILL.md').write_text('Real Person')
+        (other / 'LICENSE').write_text('Copyright Real Person')
         with self.assertRaisesRegex(ValueError, 'denylist match'):
-            preflight.scan(other, self.denylist, [skills])
+            preflight.scan(other, self.denylist)
 
     def test_publication_audit_is_not_a_cli_command(self):
         # Contributor authorship is legitimate; denylist is a sandbox preflight.
@@ -126,7 +124,7 @@ class GitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'non-synthetic'):
             preflight.scan(self.original, None, skip_denylist=True)
 
-    def test_skip_denylist_creation_and_runtime_args(self):
+    def test_skip_denylist_only_at_creation_and_never_at_runtime(self):
         from sandboxlib import settings
         commit(self.original, 'initial')
         cfg = settings.DEFAULT.copy()
@@ -163,15 +161,28 @@ class GitTests(unittest.TestCase):
             cli.command_create(args, cfg)
             path, meta = cli.load_instance('licensed')
         self.assertTrue(meta['anonymized'])
-        self.assertTrue(meta['skip_denylist'])
-        self.assertIsNone(meta['denylist'])
+        self.assertFalse(meta['denylist_checked'])
+        self.assertNotIn('denylist', meta)
+        self.assertNotIn('preparer_image', meta)
+        self.assertNotIn('skip_denylist', meta)
+        # The sandbox can now be intentionally modified: no Git identity,
+        # remote, or denylist validation takes place on subsequent runs.
+        cmd(path / 'repo', 'remote', 'add', 'origin', 'https://example.org/repo.git')
+        (path / 'repo' / 'LICENSE').write_text('Real Person')
+        changed_identity = dict(GIT_AUTHOR_NAME='Real Person', GIT_AUTHOR_EMAIL='real@example.invalid',
+                                GIT_COMMITTER_NAME='Real Person', GIT_COMMITTER_EMAIL='real@example.invalid')
+        commit(path / 'repo', 'Later personal identity', 'later.txt', 'content',
+               extra=changed_identity)
         with mock.patch.object(cli, 'pinned_image', return_value='sha256:' + 'b'*64), \
              mock.patch.object(cli, 'remember_volume'), \
-             mock.patch.object(cli, 'check_container') as checker:
-            cli.runtime_args(path, meta, cfg, 'base', ['sh'])
-        checker.assert_not_called()
-        self.assertTrue(cli.parser().parse_args(['run', 'licensed', '--skip-denylist']).skip_denylist)
-        self.assertTrue(cli.parser().parse_args(['exec', 'licensed', '--skip-denylist']).skip_denylist)
+             mock.patch.object(preflight, 'scan', side_effect=AssertionError('must not scan')):
+            command = cli.runtime_args(path, meta, cfg, 'base', ['sh'])
+        self.assertIn('docker', command)
+        # Bypass applies exclusively to preparation.
+        with self.assertRaises(SystemExit):
+            cli.parser().parse_args(['run', 'licensed', '--skip-denylist'])
+        with self.assertRaises(SystemExit):
+            cli.parser().parse_args(['exec', 'licensed', '--skip-denylist'])
         with self.assertRaisesRegex(ValueError, 'requires --anonymize'):
             cli.command_create(type('Args', (), {'name': 'wrong', 'source': str(self.original),
                 'anonymize': False, 'denylist': None, 'skip_denylist': True})(), cfg)
@@ -227,7 +238,8 @@ class GitTests(unittest.TestCase):
             path, meta = cli.load_instance('test-01')
         self.assertEqual(meta['source'], str(self.original))
         self.assertFalse(meta['anonymized'])
-        self.assertIsNone(meta['denylist'])
+        self.assertNotIn('denylist', meta)
+        self.assertFalse(meta['denylist_checked'])
         self.assertEqual(cmd(path / 'repo', 'remote'), '')
 
     def test_anonymized_commit_map_preserves_original_ancestry_on_import(self):
@@ -270,6 +282,95 @@ class GitTests(unittest.TestCase):
         self.assertEqual(cmd(self.original, 'log', '-1', '--format=%an <%ae>', tip),
                          'Real Person <real@example.invalid>')
 
+    def test_anonymized_multi_branch_merge_import_restores_original_dag(self):
+        # Faithful simulation of filter-repo's old/new commit mapping: rewrite
+        # every reachable historical commit with synthetic identities, then
+        # create new work on two branches and merge them in the sandbox.
+        initial = commit(self.original, 'A', content='a')
+        cmd(self.original, 'branch', 'feature', initial)
+        second = commit(self.original, 'B', content='b')
+        cmd(self.original, 'checkout', 'feature')
+        original_feature = commit(self.original, 'F', 'feature.txt', 'f')
+        cmd(self.original, 'checkout', 'main')
+        cmd(self.original, 'merge', '--no-ff', 'feature', '-m', 'Historical merge')
+        historical_merge = cmd(self.original, 'rev-parse', 'main')
+        original_refs = {ref: cmd(self.original, 'rev-parse', ref)
+                         for ref in ('main', 'feature')}
+
+        session = self.root / 'anon-multibranch'
+        session.mkdir()
+        repo = session / 'repo'
+        cmd(self.root, 'clone', '--no-local', str(self.original), str(repo))
+        cmd(repo, 'branch', 'feature', 'origin/feature')
+
+        old_revs = cmd(self.original, 'rev-list', '--reverse', '--topo-order',
+                       '--all').splitlines()
+        mapping = {}
+        for old in old_revs:
+            obj = subprocess.run(['git', '-C', str(self.original), 'cat-file',
+                                  'commit', old], capture_output=True, check=True).stdout
+            headers, sep, message = obj.partition(b'\n\n')
+            self.assertTrue(sep)
+            tree = next(line.split()[1].decode() for line in headers.splitlines()
+                        if line.startswith(b'tree '))
+            parents = [line.split()[1].decode() for line in headers.splitlines()
+                       if line.startswith(b'parent ')]
+            flags = [part for parent in parents for part in ('-p', mapping[parent])]
+            mapping[old] = cmd(repo, 'commit-tree', tree, *flags,
+                               data=message, extra=self.anon)
+        for branch, old in original_refs.items():
+            cmd(repo, 'update-ref', 'refs/heads/' + branch, mapping[old])
+        cmd(repo, 'reset', '--hard', mapping[historical_merge])
+        cmd(repo, 'remote', 'remove', 'origin')
+        cmd(repo, 'config', 'user.name', 'Sandbox')
+        cmd(repo, 'config', 'user.email', 'sandbox@invalid')
+        (session / 'commit-map').write_text('old new\n' + ''.join(
+            f'{old} {new}\n' for old, new in mapping.items()))
+
+        changed_identity = dict(GIT_AUTHOR_NAME='Agent Identity', GIT_AUTHOR_EMAIL='agent@example.invalid',
+                                GIT_COMMITTER_NAME='Agent Identity', GIT_COMMITTER_EMAIL='agent@example.invalid')
+        agent_main = commit(repo, 'Agent main', 'main-extra.txt', 'new', extra=changed_identity)
+        cmd(repo, 'checkout', 'feature')
+        agent_feature = commit(repo, 'Agent feature', 'feature-extra.txt', 'new', extra=self.anon)
+        cmd(repo, 'checkout', 'main')
+        cmd(repo, 'merge', '--no-ff', 'feature', '-m', 'Agent merge', extra=self.anon)
+        agent_merge = cmd(repo, 'rev-parse', 'main')
+        self.assertNotIn(agent_main, original_refs.values())
+
+        meta = {'source': str(self.original), 'name': 'anon', 'id': 'abc123'}
+        branches = import_branches(session, meta)
+        self.assertEqual(set(branches), {'sandbox/anon/main', 'sandbox/anon/feature'})
+        imported_main = 'refs/heads/sandbox/anon/main'
+        imported_feature = 'refs/heads/sandbox/anon/feature'
+
+        # History reconnects to ORIGINAL SHAs: no duplicated rewritten
+        # historical ancestry is left in the imported branch.
+        self.assertEqual(cmd(self.original, 'rev-parse', imported_feature + '^'),
+                         original_feature)
+        parents = cmd(self.original, 'rev-list', '--parents', '-n', '1', imported_main).split()
+        self.assertEqual(len(parents), 3)
+        self.assertEqual(cmd(self.original, 'rev-parse', parents[1] + '^'),
+                         historical_merge)
+        self.assertEqual(parents[2], cmd(self.original, 'rev-parse', imported_feature))
+        self.assertEqual(cmd(self.original, 'rev-list', '--parents', '-n', '1', historical_merge).split()[1:],
+                         [second, original_feature])
+
+        # New commit objects retain their complete trees and merge graph,
+        # but use the host's Git author and committer identity.
+        for host_ref, sandbox_ref in ((imported_main, 'main'),
+                                      (imported_feature, 'feature')):
+            self.assertEqual(cmd(self.original, 'rev-parse', host_ref + '^{tree}'),
+                             cmd(repo, 'rev-parse', sandbox_ref + '^{tree}'))
+        self.assertEqual(cmd(self.original, 'log', '-1', '--format=%an <%ae>/%cn <%ce>', imported_main),
+                         'Real Person <real@example.invalid>/Real Person <real@example.invalid>')
+        self.assertEqual(cmd(self.original, 'log', '-1', '--format=%an <%ae>', historical_merge),
+                         'Real Person <real@example.invalid>')
+        self.assertEqual(cmd(self.original, 'log', '-1', '--format=%an <%ae>', parents[1]),
+                         'Real Person <real@example.invalid>')
+        self.assertNotEqual(cmd(self.original, 'rev-parse', imported_main), agent_merge)
+        for branch, original_sha in original_refs.items():
+            self.assertEqual(cmd(self.original, 'rev-parse', branch), original_sha)
+
     def test_shared_tools_mount_and_python_path_preservation(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
@@ -296,29 +397,27 @@ class GitTests(unittest.TestCase):
         self.assertIn('sandbox-app-config-abcd', ' '.join(first))
         self.assertIn('sandbox-app-cache-abcd', ' '.join(first))
 
-    def test_anonymized_scans_skills_not_shared_tools(self):
+    def test_anonymized_runtime_keeps_mounts_without_scanning_them(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
-        cfg['preparer'] = {'image': 'sandbox/preparer:v1'}
-        cfg['runtimes'] = {'base': {'image':'sandbox/base:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}, 'python-xpu': {'image':'sandbox/python-xpu:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}}
-        cfg['mounts'] = []
+        cfg['runtimes'] = {'base': {'image':'sandbox/base:v1', 'shell':'/bin/bash',
+                                  'venv_volume':True, 'devices':[],
+                                  'dockerfile':None, 'context':None}}
         tools = self.root / 'resources/tools/bin'
         tools.mkdir(parents=True)
         skill = self.root / 'skills'
         skill.mkdir()
+        (skill / 'SKILL.md').write_text('Real Person')
         cfg['mounts'] = [(str(skill), '/root/.agents/skills', False)]
         meta = {'id': 'abcd', 'name': 'test', 'anonymized': True,
-                'denylist': str(self.denylist), 'preparer_image': 'sha256:'+'1'*64,
                 'runtime_images': {}, 'volumes': []}
         with mock.patch.object(cli, 'resource_dir', return_value=self.root / 'resources'), \
              mock.patch.object(cli, 'pinned_image', return_value='sha256:' + 'b' * 64), \
              mock.patch.object(cli, 'remember_volume'), \
-             mock.patch.object(cli, 'check_container') as checker:
+             mock.patch.object(preflight, 'scan', side_effect=AssertionError('must not scan')):
             args = cli.runtime_args(self.root, meta, cfg, 'base', ['/bin/bash'])
         self.assertIn(f'type=bind,src={tools.parent.resolve()},dst=/opt/tools,readonly', args)
-        extras = checker.call_args.args[-1]
-        self.assertNotIn((tools.parent.resolve(), '/opt/tools'), extras)
-        self.assertIn((skill.resolve(), '/root/.agents/skills'), extras)
+        self.assertIn(f'type=bind,src={skill.resolve()},dst=/root/.agents/skills,readonly', args)
 
     def test_generic_mounts_and_core_cli(self):
         from sandboxlib import settings

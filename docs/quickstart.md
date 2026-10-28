@@ -65,23 +65,21 @@ sandbox inspect dev
 
 The source Git repository must be clean (no untracked/uncommitted changes) and have at least one commit. A prepared *independent* clone is stored under `$XDG_STATE_HOME/sandbox/instances/NAME/repo` (default `~/.local/state/sandbox/instances/NAME/repo`). No source remote is provided to the application container.
 
-For anonymization, add one private denylist term per line to `~/.config/sandbox/denylist.txt` (mode `0600`) and create with `--anonymize`. The preparer rewrites commit identities in a network-disabled container, saves the original/anonymous commit mapping *outside* the agent mount, and checks denylist terms before launching the application. This is **best-effort**, not total anonymization.
+For anonymization, add one private denylist term per line to `~/.config/sandbox/denylist.txt` (mode `0600`) and create with `--anonymize`. The preparer rewrites commit identities in a network-disabled container, saves the original/anonymous commit mapping *outside* the agent mount, and checks denylist terms during repository creation only. This is **best-effort**, not total anonymization.
 
-If a known intentional identifier (such as your name in `LICENSE`) causes
-a false-positive for your workflow, you can explicitly opt out:
+An intentional identifier (such as the copyright holder in `LICENSE`) may
+trigger the denylist. You can skip **only the content scan at creation**:
 
 ```bash
 sandbox create agent /absolute/path/to/repo --anonymize --skip-denylist
 sandbox run agent
-# For already-created anonymized environments, bypass only this execution:
-sandbox run existing-agent --skip-denylist
 ```
 
-`--skip-denylist` on `create` is stored in the sandbox metadata and remains
-active on subsequent launches. The same flag on `run` or `exec` is temporary.
-The Git identity rewrite and structural Git checks remain active, but **no
-content screening takes place**; source files or historical commit messages can
-still reveal identifying information. This is not a privacy guarantee.
+Identity rewriting and checks for Git remotes and object alternates still
+happen during creation. `run` and `exec` do **not** rerun any anonymization
+checks. The option cannot be supplied after creation; modifying the sandbox
+repository or adding a remote later is your responsibility. The denylist
+only detects known literal terms and is not a comprehensive privacy guarantee.
 
 ## Run commands
 

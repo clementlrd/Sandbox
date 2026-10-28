@@ -34,7 +34,15 @@ Host-only import process -> review branches in original Git repo
 
 ## Creation
 
-`create` requires a clean source Git repository and explicitly built preparer image. The preparer has read-only source access and a writable output session directory; it runs without network access, Docker socket, host SSH credentials or interactive agent. For `--anonymize`, Git commit author/committer (and tagger) identity fields are rewritten to a synthetic identity and a private old-to-new commit map is retained on the host. Anonymization is optional per named sandbox. Denylist scanning defaults to **on** for anonymized sandboxes, but `create --anonymize --skip-denylist` persists an explicit opt-out. `run` and `exec` also accept `--skip-denylist` as a one-invocation bypass. In all cases the Git identity/remote/alternates checks remain active; the bypass does not guarantee absence of identifying information in repository contents.
+`create` requires a clean source Git repository and explicitly built preparer
+image. The preparer has read-only source access and a writable output session
+directory; it runs without network access, Docker socket, host SSH credentials
+or interactive agent. With `--anonymize`, historical author/committer/tagger
+identities are replaced with a synthetic identity; the old-to-new commit map is
+retained privately on the host. Git identity, remotes and object alternates are
+validated **once on creation**. The content denylist is checked once unless
+`create --anonymize --skip-denylist` is specified. This option does not suppress
+identity rewriting or structural checks.
 
 Git history and branches remain available inside the sandbox. Rewritten commit hashes differ from those in the source repository. The importer uses the host-only mapping to reconnect agent-created commits to source ancestry.
 
@@ -42,7 +50,12 @@ Git history and branches remain available inside the sandbox. Rewritten commit h
 
 Each `run` or `exec` launches a new, short-lived Docker container. The manager enforces rootless Docker and uses explicit bind mounts, named volumes, dropped Linux capabilities, a process limit, memory limit and `no-new-privileges`. The image's own filesystem changes are discarded on exit; mounted state persists.
 
-For anonymized sandboxes with scanning enabled, a preparer preflight runs again before an application container starts. It checks the workspace and configured read-only mounts. It does not inspect globally shared tools binaries or the contents of previously persisted application data/venv volumes. See [Security](security.md) for why that matters.
+No Git identity checks, denylist scans, or calls to the preparer are made by
+`run` or `exec`. The sandbox can change its own Git remotes, branches, authors
+and files after creation. User-supplied read-only mounts (for example skills)
+and shared tools are **not scanned** by the one-time repository preflight; they
+are independently selected at execution time. Re-examine those mounts before
+exposing sensitive host content to an agent.
 
 Application data is **not tied to a runtime**: one sandbox's app volumes are shared by its `base`, `python-xpu`, `python-cuda`, and custom runtimes. Python venv volumes **are tied to the exact image ID**, because interpreter paths and native package ABIs are generally not portable between images. Distinct profiles that reference the same image ID may share that venv volume.
 

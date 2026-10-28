@@ -18,15 +18,22 @@ The Docker socket, host SSH agent and host Git credentials are not mounted by de
 
 ## What anonymization does and does not do
 
-With `--anonymize`, the preparer rewrites author/committer/tagger identity metadata and stores the old/new Git commit mapping **outside** the runtime mount. A private user-defined denylist scans reachable/unreachable Git objects, current filesystem paths, symlink targets and configured host read-only mounts. Matches fail closed before launch. The same preflight is repeated on later launches.
+With `--anonymize`, the preparer rewrites author/committer/tagger identity
+metadata and stores the old/new Git commit mapping **outside** the runtime
+mount. It verifies the freshly prepared Git repository has no configured
+remotes or object alternates, and checks reachable commit identities. Unless
+`--skip-denylist` is passed to `create`, a private user-defined denylist scans
+the prepared Git objects (including unreachable objects), workspace paths,
+files and symlink targets. This is a **one-time creation check**. The command
+fails before the sandbox is created if this check fails.
 
-It does **not** guarantee privacy. Users must consider: personal details in commit messages, names not on the list, zipped/compressed/encrypted/encoded data, images, Git LFS/submodules, files ignored by Git, binary false positives, credentials already persisted in app volumes, runtime tools and their metadata, and information inferred from historical behavior. The preflight intentionally skips shared tools content because arbitrary executable bytes can cause spurious matches. For strict confidentiality, sanitization needs independent review beyond this best-effort scanner.
+It does **not** guarantee privacy. Users must consider: personal details in commit messages, names not on the list, zipped/compressed/encrypted/encoded data, images, Git LFS/submodules, files ignored by Git, binary false positives, credentials already persisted in app volumes, runtime tools and their metadata, separately mounted skills/configuration, changes made after creation, and information inferred from historical behavior. The preflight does not scan shared tools or separately configured mounts; it only checks the prepared repository at creation. For strict confidentiality, sanitization needs independent review beyond this best-effort scanner.
 
 A non-anonymized sandbox still has an independent Git repository but **preserves historical identities**. The `--anonymize` option affects creation and cannot be switched later in place.
 
 ## Host executable and mounted-skill risks
 
-Setup recipes under `~/.config/sandbox/recipes` run **on the host** after explicit confirmation; never copy an untrusted repo recipe there without review. User-provided Dockerfiles may execute arbitrary build instructions. `[[mounts]]` can expose host information; they are intentionally read-only and scanned for configured denylist terms in anonymized mode, but content in them is still visible to the agent.
+Setup recipes under `~/.config/sandbox/recipes` run **on the host** after explicit confirmation; never copy an untrusted repo recipe there without review. User-provided Dockerfiles may execute arbitrary build instructions. `[[mounts]]` can expose host information; they are intentionally read-only, but **are not checked** by the one-time repository denylist scan and their content is visible to the agent.
 
 Avoid mounts containing secrets, host SSH keys, browser profiles, Docker sockets, private home directories or writable shared binaries. Sharing a Docker socket with an agent typically destroys the intended isolation boundary.
 
@@ -46,16 +53,16 @@ Before a broad public release, review at least: filesystem mount target collisio
 
 References: [Docker rootless mode](https://docs.docker.com/engine/security/rootless/), [Docker rootless limitations](https://docs.docker.com/engine/security/rootless/troubleshoot/).
 
-## Explicit denylist bypass
+## One-time denylist bypass
 
-`create --anonymize --skip-denylist` is an **opt-out from content screening**
-that persists for the named sandbox. `run --skip-denylist` and
-`exec --skip-denylist` bypass only the specified invocation. The Git history
-rewrite is still performed on creation, and launch still rejects unexpected
-Git remotes, non-synthetic reachable commit authors/committers, and object
-alternates. **It does not check source files, history blobs, skills, mount
-contents, or filenames for sensitive strings.** A copyright name in a license
-will still be visible to the agent, and other secrets may be present too.
+`create --anonymize --skip-denylist` omits **only the content denylist scan**
+while still rewriting historical identities and verifying the freshly
+prepared repository has no remotes, object alternates or non-synthetic
+reachable commit identities. It is a creation-time switch, **not** a runtime
+permission or a persistent security policy. `run` and `exec` never scan or
+rewrite the repository.
 
-Use strict checking by default; bypass it only when you explicitly accept
-that disclosure. This is deliberately not a silent fallback on scan failures.
+A name in `LICENSE`, historical commit messages or other source data can
+therefore remain visible inside the sandbox. Likewise, any later changes to
+Git identity or remotes are controlled by whoever uses the sandbox, not by
+continuous enforcement.

@@ -79,7 +79,7 @@ target = "/root/.config/opencode/opencode.jsonc"
 optional = true
 ```
 
-There are no OpenCode-specific mount flags. All declared mounts are exposed to *every runtime* and included in full denylist scans for anonymized sandboxes. `optional = true` skips missing sources; otherwise missing sources fail. The host-managed `/opt/tools` mount is exempt from binary content scans, as documented in [Security](security.md). No `scan` property is implemented. The launcher refuses mounts overlapping `/workspace`, `/opt/tools` or `/opt/venvs`.
+There are no OpenCode-specific mount flags. All declared mounts are exposed to *every runtime*, but they are **not inspected by anonymization**, which only scans the prepared repository once at creation. `optional = true` skips missing sources; otherwise missing sources fail. Shared `/opt/tools` is also not scanned. The launcher refuses mounts overlapping `/workspace`, `/opt/tools` or `/opt/venvs`. See [Security](security.md).
 
 ## Trusted setup recipes
 

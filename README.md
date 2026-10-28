@@ -43,14 +43,18 @@ sandbox create ai-work ~/projects/my-repo --anonymize --skip-denylist
 sandbox run ai-work
 ```
 
-This still rewrites historical Git authors/committers and checks for unexpected
-Git remotes, but it **does not check file contents or history for personal
-information**. The setting persists for that sandbox and is displayed in
-`sandbox list` and `sandbox inspect`. For an existing anonymized sandbox,
-`sandbox run ai-work --skip-denylist` (or
-`sandbox exec ai-work --skip-denylist -- COMMAND`) bypasses the scan for that invocation only.
-Use this only when you accept exposing any names or secrets left in files.
+Anonymization and its checks happen **once during `sandbox create`**.
+The preparer rewrites historical Git authors/committers, checks the prepared
+repository for remotes and object alternates, and (unless skipped) scans its
+content against your denylist. `--skip-denylist` only skips that content scan;
+it does not disable history rewriting or the preparation checks. No identity
+or denylist checks run during `sandbox run` or `sandbox exec`. Changes you make
+inside a sandbox afterward are your responsibility.
 
+`--skip-denylist` is a **creation-only** flag; it cannot be passed to `run`
+or `exec`. The import operation still uses the private commit mapping to
+restore original ancestry before creating review branches with your host Git
+identity.
 
 The source repository must be clean at creation. `sandbox import` creates *review branches* in the original repository—it never merges or pushes. Commit changes inside the sandbox before importing. `sandbox destroy` removes the sandbox workspace and its named volumes, including application authentication and virtual environments.
 

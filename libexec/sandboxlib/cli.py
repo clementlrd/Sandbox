@@ -13,7 +13,6 @@ import uuid
 from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
-from .preflight import scan as scan_repository
 from .settings import read_only_mounts, load
 
 
@@ -113,18 +112,6 @@ def prepare_container(image, source, session, anonymize, deny, *, skip_denylist=
     call(args)
 
 
-def check_container(image, repo, deny, extras):
-    args = preparer_common(image)[:-1]
-    args += ['--mount', mount_spec(repo, '/workspace', True),
-             '--mount', mount_spec(deny, '/private/denylist.txt', True)]
-    for index, (source, _) in enumerate(extras):
-        args += ['--mount', mount_spec(source, f'/extras/{index}', True)]
-    args += [image, 'check']
-    for index in range(len(extras)):
-        args += ['--extra', f'/extras/{index}']
-    call(args)
-
-
 def command_create(args, cfg):
     skip = args.skip_denylist
     if skip and not args.anonymize:
@@ -144,9 +131,9 @@ def command_create(args, cfg):
         meta = {
           'name': args.name, 'id': uuid.uuid4().hex[:16], 'source': str(source),
           'created_at': datetime.now(timezone.utc).isoformat(),
-          'anonymized': args.anonymize, 'denylist': str(deny) if deny else None,
-          'skip_denylist': skip,
-          'preparer_image': preparer_id, 'runtime_images': {}, 'volumes': [],
+          'anonymized': args.anonymize,
+          'denylist_checked': bool(args.anonymize and not skip),
+          'runtime_images': {}, 'volumes': [],
         }
         save_instance(path, meta)
     except BaseException:
@@ -167,8 +154,7 @@ def command_list(args, cfg):
             continue
         try:
             meta = json.loads((path / 'metadata.json').read_text())
-            mode = ('anon/no-scan' if meta.get('skip_denylist') else
-                    'anonymized' if meta['anonymized'] else 'normal')
+            mode = 'anonymized' if meta['anonymized'] else 'normal'
             print(f'{meta["name"]:<25} {mode:<13} {meta["source"]}')
         except (OSError, ValueError, KeyError):
             print(f'{path.name:<25} INVALID')
@@ -218,8 +204,8 @@ def remember_volume(meta, path, name):
         save_instance(path, meta)
 
 
-def runtime_args(path, meta, cfg, runtime, command, *, skip_denylist=False):
-    """Compose one ephemeral shell/command container, with generic shared tools.
+def runtime_args(path, meta, cfg, runtime, command):
+    """Compose one ephemeral runtime container without repeating Git preparation.
 
     The image's original PATH is preserved by prepending /opt/tools/bin *inside*
     the container. In particular, the Intel XPU image needs /opt/venv/bin.
@@ -228,15 +214,6 @@ def runtime_args(path, meta, cfg, runtime, command, *, skip_denylist=False):
     definition = runtime_definition(profile, cfg)
     image = pinned_image(meta, path, profile, cfg)
     mounts = read_only_mounts(cfg)
-    if meta['anonymized']:
-        if skip_denylist or meta.get('skip_denylist', False):
-            # The explicit bypass skips content scanning, not Git safeguards.
-            scan_repository(path / 'repo', None, skip_denylist=True)
-        else:
-            deny = denylist_path(meta['denylist'])
-            # Scan the repository and user-supplied read-only mounts (e.g. skills).
-            # Shared executable tools are host-managed and deliberately excluded.
-            check_container(meta['preparer_image'], path / 'repo', deny, list(mounts))
     if cfg['shared_tools']:
         tools = resource_dir() / 'tools'
         if not (tools / 'bin').is_dir():
@@ -375,8 +352,7 @@ def command_run(args, cfg):
     try:
         runtime = selected_runtime(args.runtime, cfg)
         shell = runtime_definition(runtime, cfg)['shell']
-        subprocess.run(runtime_args(path, meta, cfg, runtime, [shell],
-                                    skip_denylist=args.skip_denylist), check=True)
+        subprocess.run(runtime_args(path, meta, cfg, runtime, [shell]), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -388,7 +364,7 @@ def command_exec(args, cfg):
         raise ValueError('expected command after --')
     try:
         subprocess.run(runtime_args(path, meta, cfg, selected_runtime(args.runtime, cfg),
-                                    args.command, skip_denylist=args.skip_denylist), check=True)
+                                    args.command), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -476,7 +452,7 @@ def parser():
     create.add_argument('source')
     create.add_argument('--anonymize', action='store_true')
     create.add_argument('--skip-denylist', action='store_true',
-                        help='skip the denylist scan for this sandbox (persistent; identity rewrite remains)')
+                        help='omit the one-time content scan during anonymized preparation')
     create.add_argument('--denylist', help='alternate private denylist')
     create.set_defaults(handler=command_create)
     listing = sub.add_parser('list', help='list named sandboxes')
@@ -489,8 +465,6 @@ def parser():
     run = sub.add_parser('run', help='launch an interactive shell in a sandbox')
     run.add_argument('name')
     run.add_argument('--runtime', default=None)
-    run.add_argument('--skip-denylist', action='store_true',
-                     help='bypass denylist scanning for this launch only')
     run.add_argument('--setup', action='append', default=[], metavar='RECIPE',
                      help='apply trusted host setup recipe before starting')
     run.add_argument('--force-setup', action='store_true', help='reapply an already completed recipe')
@@ -506,8 +480,6 @@ def parser():
     exe = sub.add_parser('exec', help='execute a command in an ephemeral container')
     exe.add_argument('name')
     exe.add_argument('--runtime', default=None)
-    exe.add_argument('--skip-denylist', action='store_true',
-                     help='bypass denylist scanning for this command only')
     exe.set_defaults(handler=command_exec)
     imp = sub.add_parser('import', help='make host review branches from sandbox commits')
     imp.add_argument('name')

@@ -52,7 +52,7 @@ sandbox import smoke
 sandbox destroy smoke --yes
 ```
 
-Then test anonymized history with synthetic identities and a denylist; deliberately introduce a forbidden term into an old commit and ensure creation/launch is blocked. Test a custom runtime (`sandbox runtimes`, `sandbox build custom`, `sandbox run ... --runtime custom`), and an optional device-backed runtime on a host that actually has that device. Check app volume survival after an exit and deletion after `destroy`. Try setup recipes with synthetic credentials, never production tokens.
+Then test anonymized history with synthetic identities and a denylist; deliberately introduce a forbidden term into an old commit and ensure creation is blocked (later launches never scan). Test a custom runtime (`sandbox runtimes`, `sandbox build custom`, `sandbox run ... --runtime custom`), and an optional device-backed runtime on a host that actually has that device. Check app volume survival after an exit and deletion after `destroy`. Try setup recipes with synthetic credentials, never production tokens.
 
 ## Adding a new runtime
 
