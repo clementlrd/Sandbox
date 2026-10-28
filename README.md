@@ -84,7 +84,7 @@ You can also specify a Dockerfile and build context for `sandbox build NAME`. Pr
 
 The example runtime images include `jq` and `tmux` as OS packages. You can use these or any other programs directly from the shell; there is no application-profile machinery. Note that a `tmux` server stops when its ephemeral container exits.
 
-`/workspace` holds the persistent independent Git repository. Application data, configuration, and cache have per-sandbox Docker volumes. `/opt/venvs` is optional and isolated by **sandbox and runtime image ID**, so environments made under `base`, `python-xpu`, and `python-cuda` do not get accidentally mixed. `sandbox-py` can install dependencies from `pyproject.toml` using pip, reusing a base image's PyTorch installation where provided. It does not consume `uv.lock`.
+`/workspace` holds the persistent independent Git repository. Application data, configuration, and cache have per-sandbox Docker volumes. `/opt/venvs` is optional and isolated by **sandbox and runtime image ID**, so environments made under `base`, `python-xpu`, and `python-cuda` do not get accidentally mixed. `sandbox-py` creates project venvs and installs dependencies from `pyproject.toml` using pip, reusing a base image's PyTorch installation where provided. The helper is mounted through the shared tools directory, not copied into runtime images. It does not consume `uv.lock`.
 
 ## Trusted setup recipes
 

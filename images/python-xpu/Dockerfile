@@ -9,7 +9,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git git-lfs openssh-client curl bash \
       python3-venv build-essential ripgrep less jq tmux
-COPY images/shared/sandbox-venv /usr/local/bin/sandbox-venv
-RUN chmod 755 /usr/local/bin/sandbox-venv && mkdir -p /opt/venvs /workspace
+RUN mkdir -p /opt/venvs /workspace
 WORKDIR /workspace
 CMD ["/bin/bash"]

@@ -43,10 +43,10 @@ class RuntimeProfiles(unittest.TestCase):
         self.assertIn("'torch==2.9.1'", dockerfile)
         self.assertIn('/opt/venv', dockerfile)
         self.assertIn('--mount=type=cache,target=/root/.cache/pip', dockerfile)
-        self.assertIn('images/shared/sandbox-venv', dockerfile)
-        self.assertTrue((project / 'images/shared/sandbox-venv').is_file())
+        self.assertNotIn('sandbox-venv', dockerfile)
         xpu_dockerfile = (project / 'images/python-xpu/Dockerfile').read_text()
-        self.assertIn('images/shared/sandbox-venv', xpu_dockerfile)
+        self.assertNotIn('sandbox-venv', xpu_dockerfile)
+        self.assertFalse((project / 'images/shared').exists())
 
     def test_cuda_runtime_profile_is_generic_and_adds_docker_gpu_request(self):
         cfg = self.load_text('''

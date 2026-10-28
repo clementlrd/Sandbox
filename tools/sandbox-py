@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -104,6 +103,27 @@ def check_base(path, data):
         error(f'base PyTorch changed: expected {pin}, now {detected}; recreate the venv')
 
 
+def create_inherited_env(path, base_python, base_info):
+    """Create a child venv that can import packages from the runtime's base venv.
+
+    This preserves the existing layout: a .pth file makes the base site-packages
+    visible, while packages installed later go into the child venv. The base
+    distribution is *not* copied or modified.
+    """
+    base_site = Path(base_info['site']).resolve()
+    torch_path = Path(base_info['torch_location']).resolve()
+    if not torch_path.is_relative_to(base_site):
+        error('base PyTorch is outside the base Python site-packages')
+    run([base_python, '-m', 'venv', path])
+    child = path / 'bin/python'
+    if not child.is_file():
+        error(f'virtual environment was not created at {path}')
+    child_site = Path(py_info(child)['site']).resolve()
+    if not child_site.is_relative_to(path.resolve()):
+        error('child Python site-packages are outside the project environment')
+    (child_site / 'sandbox-base-pytorch.pth').write_text(str(base_site) + '\n', encoding='utf-8')
+
+
 def ensure_env(path, project):
     if path.exists():
         data = state_for(path)
@@ -117,10 +137,7 @@ def ensure_env(path, project):
     if BASE_PYTHON.is_file():
         base_info = py_info(BASE_PYTHON)
     if base_info and base_info.get('torch'):
-        creator = shutil.which('sandbox-venv')
-        if not creator:
-            error('base PyTorch detected but sandbox-venv is unavailable')
-        run([creator, path.name])
+        create_inherited_env(path, BASE_PYTHON, base_info)
         base = BASE_PYTHON
     else:
         base = Path(sys.executable).resolve()
@@ -242,7 +259,7 @@ def command_check(args):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog='sandbox-py', description='Persistent Python environments (pip, shared XPU torch)')
+    p = argparse.ArgumentParser(prog='sandbox-py', description='Persistent Python environments (pip, optional shared base PyTorch)')
     sub = p.add_subparsers(dest='command', required=True)
     init = sub.add_parser('init', help='create/reuse an environment and install a project')
     init.add_argument('name')

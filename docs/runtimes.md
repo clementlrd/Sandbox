@@ -85,7 +85,7 @@ devices = ["/dev/dri/renderD128"]
 
 The launcher exposes only those device nodes via Docker `--device` and adds their numeric host GIDs. This may require extra rootless Docker device/ACL configuration, which varies by host; a GID without a name in `/etc/group` is not necessarily a failure. Device access is **sensitive**: do not expose more host hardware than necessary.
 
-For an ordinary non-Python runtime, use `venv_volume = false` to avoid unnecessary `/opt/venvs` volume creation. A generic runtime doesn't need PyTorch. The `sandbox-py` helper is optional; its special inheritance mode is intended for images containing a base Python/PyTorch environment.
+For an ordinary non-Python runtime, use `venv_volume = false` to avoid unnecessary `/opt/venvs` volume creation. A generic runtime doesn't need PyTorch. The `sandbox-py` helper is installed in the shared read-only tools directory. It creates persistent project venvs itself; to inherit a GPU-enabled PyTorch installation, a runtime can provide its base Python environment at `/opt/venv`. No runtime-specific `sandbox-venv` executable is required.
 
 ### NVIDIA CUDA and rootless Docker
 

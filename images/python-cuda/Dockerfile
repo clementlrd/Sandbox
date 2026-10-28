@@ -13,13 +13,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       python3 python3-venv build-essential ripgrep less jq tmux
 
 # Store PyTorch in a dedicated base venv (same path as the XPU example),
-# so sandbox-venv / sandbox-py can reuse it without a second torch install.
+# so sandbox-py can reuse it without a second torch install.
 RUN python3 -m venv /opt/venv
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     /opt/venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cu126 \
       'torch==2.9.1'
-COPY images/shared/sandbox-venv /usr/local/bin/sandbox-venv
-RUN chmod 755 /usr/local/bin/sandbox-venv && mkdir -p /opt/venvs /workspace
+RUN mkdir -p /opt/venvs /workspace
 ENV PATH="/opt/venv/bin:${PATH}"
 WORKDIR /workspace
 CMD ["/bin/bash"]

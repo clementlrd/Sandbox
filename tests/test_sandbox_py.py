@@ -117,6 +117,46 @@ dependencies = ["torch>=2.0", "rich>=13"]
         self.assertNotEqual(blocked.returncode, 0)
         self.assertFalse((Path(child_info['site']) / 'torch').exists())
 
+    def test_sandbox_py_creates_inherited_env_without_runtime_helper(self):
+        """Real venv creation inherits base torch without a sandbox-venv binary."""
+        base = self.root / 'base'
+        venvs = self.root / 'venvs'
+        venvs.mkdir()
+        subprocess.run([sys.executable, '-m', 'venv', str(base)], check=True)
+        base_site = Path(sandbox_py.py_info(base / 'bin/python')['site'])
+        (base_site / 'torch').mkdir()
+        (base_site / 'torch/__init__.py').write_text('__version__ = "2.14.0+xpu"\n')
+        dist = base_site / 'torch-2.14.0+xpu.dist-info'
+        dist.mkdir()
+        (dist / 'METADATA').write_text('Metadata-Version: 2.1\nName: torch\nVersion: 2.14.0+xpu\n')
+
+        with mock.patch.object(sandbox_py, 'VENV_ROOT', venvs), \
+             mock.patch.object(sandbox_py, 'BASE_PYTHON', base / 'bin/python'):
+            env = sandbox_py.venv_path('project')
+            state = sandbox_py.ensure_env(env, self.project)
+            self.assertEqual(state['base_torch'], '2.14.0+xpu')
+            self.assertEqual((env / sandbox_py.CONSTRAINT_NAME).read_text(), 'torch==2.14.0+xpu\n')
+            self.assertEqual(sandbox_py.py_info(env / 'bin/python')['torch'], '2.14.0+xpu')
+            self.assertEqual(sandbox_py.ensure_env(env, self.project), state)
+
+        child_site = Path(sandbox_py.py_info(env / 'bin/python')['site'])
+        self.assertEqual(
+            (child_site / 'sandbox-base-pytorch.pth').read_text(),
+            str(base_site.resolve()) + '\n'
+        )
+        self.assertFalse((child_site / 'torch').exists())
+
+    def test_sandbox_py_creates_plain_env_without_base_torch(self):
+        venvs = self.root / 'venvs'
+        venvs.mkdir()
+        with mock.patch.object(sandbox_py, 'VENV_ROOT', venvs), \
+             mock.patch.object(sandbox_py, 'BASE_PYTHON', self.root / 'missing-python'):
+            path = sandbox_py.venv_path('plain')
+            state = sandbox_py.ensure_env(path, self.project)
+        self.assertIsNone(state['base_torch'])
+        self.assertTrue((path / 'bin/python').is_file())
+        self.assertFalse((path / sandbox_py.CONSTRAINT_NAME).exists())
+
     def test_installer_always_provides_sandbox_py_without_optional_downloads(self):
         home = self.root / 'home'
         home.mkdir()
