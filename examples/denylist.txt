@@ -1,0 +1,6 @@
+# A private denylist of literal, case-insensitive names/addresses/handles.
+# Add one term per line. It must contain at least one active entry to anonymize.
+# Example entries (remove these placeholders):
+# Jane Example
+# jane@example.org
+# personal-git-handle

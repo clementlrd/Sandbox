@@ -1,0 +1,18 @@
+# Copied to ~/.config/sandbox/config.toml
+[sandbox]
+memory = "8g"
+pids_limit = 512
+network = "bridge"                 # "bridge" (Internet) or "none"
+gpu_devices = []                   # e.g. ["/dev/dri/renderD128"]
+forward_env = []                   # e.g. ["ANTHROPIC_API_KEY"]; secrets visible inside agent
+mount_global_skills = true        # OpenCode only; read-only mounts
+opencode_config = "apps/opencode.jsonc"
+venv_volume = true                # persistent per-sandbox, per-image-ID virtualenv storage
+
+# Stable local image tags. `sandbox build` NEVER runs implicitly.
+[images]
+preparer = "sandbox/preparer:v1"
+base = "sandbox/base:v1"
+python-xpu = "sandbox/python-xpu:v1"
+opencode = "sandbox/opencode:v1"
+opencode-xpu = "sandbox/opencode-xpu:v1"

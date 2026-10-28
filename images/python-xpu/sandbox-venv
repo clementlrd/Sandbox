@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Create a venv sharing read-only packages from Intel's /opt/venv PyTorch base."""
+from pathlib import Path
+import argparse
+import subprocess
+
+parser = argparse.ArgumentParser(description='Create a Python venv that reuses base XPU PyTorch')
+parser.add_argument('name', help='name within /opt/venvs')
+args = parser.parse_args()
+if not args.name or args.name in ('.', '..') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-' for c in args.name):
+    parser.error('name must be a simple directory name')
+base_python = Path('/opt/venv/bin/python')
+if not base_python.is_file():
+    parser.error('expected Intel PyTorch Python at /opt/venv/bin/python')
+target = Path('/opt/venvs') / args.name
+if target.exists():
+    parser.error(f'{target} already exists')
+subprocess.run([str(base_python), '-m', 'venv', str(target)], check=True)
+def site(py):
+    code = 'import sysconfig; print(sysconfig.get_paths()["purelib"])'
+    return Path(subprocess.check_output([str(py), '-c', code], text=True).strip())
+base_lib = site(base_python)
+venv_lib = site(target / 'bin/python')
+if not (base_lib / 'torch').is_dir():
+    parser.error('base Python does not contain torch')
+(venv_lib / 'sandbox-base-pytorch.pth').write_text(str(base_lib) + '\n')
+print(f'Created {target}; shares XPU PyTorch from {base_lib}')
