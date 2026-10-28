@@ -28,7 +28,7 @@ while (( $# )); do
 done
 
 install -d -m 755 "$BIN" "$LIB" "$DATA" "$DATA/libexec" "$CONFIG/apps" \
-  "$DATA/tools/bin" "$DATA/tool-installers"
+  "$DATA/tools/bin" "$DATA/tool-installers" "$CONFIG/recipes"
 install -m 755 "$ROOT/bin/sandbox" "$BIN/sandbox"
 # Always install the generic Python environment manager into the shared tools mount.
 install -m 755 "$ROOT/tools/sandbox-py" "$DATA/tools/bin/sandbox-py"
@@ -63,6 +63,15 @@ fi
 if [[ ! -e "$CONFIG/apps/opencode.jsonc" ]]; then
   install -m 600 "$ROOT/examples/opencode.jsonc" "$CONFIG/apps/opencode.jsonc"
 fi
+
+# Preserve user-maintained recipes on upgrade. Install only missing examples.
+for recipe in "$ROOT"/recipes/*.sh; do
+  [[ -f "$recipe" ]] || continue
+  dest="$CONFIG/recipes/$(basename "$recipe")"
+  if [[ ! -e "$dest" ]]; then
+    install -m 700 "$recipe" "$dest"
+  fi
+done
 
 if [[ -z "$CHOICE" && -t 0 ]]; then
   printf '\nOptional shared tools (installed on the host, mounted RO inside sandboxes):\n'
@@ -99,6 +108,7 @@ Installed sandbox into:
   $DATA/images
   $DATA/tools/bin  (sandbox-py always installed; mounted read-only at /opt/tools/bin)
   $DATA/tool-installers
+  $CONFIG/recipes (trusted host-side setup recipes)
   $CONFIG
 Existing config and denylist were preserved.
 Ensure $BIN is in PATH.

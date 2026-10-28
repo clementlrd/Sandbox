@@ -14,6 +14,10 @@ DEFAULT = {
     'venv_volume': True,
     'shared_tools': True,
 }
+SETUP_DEFAULT = {
+    'recipes_dir': '~/.config/sandbox/recipes',
+    'confirm_host_execution': True,
+}
 # Legacy config keys are accepted so upgrading does not discard users' skills.
 LEGACY = {'mount_global_skills', 'opencode_config'}
 IMAGES = {
@@ -28,15 +32,20 @@ def load():
     obj = DEFAULT.copy()
     images = IMAGES.copy()
     extra_mounts = []
+    setup = SETUP_DEFAULT.copy()
     if path.is_file():
         with path.open('rb') as f:
             raw = tomllib.load(f)
-        unknown = set(raw) - {'sandbox', 'images', 'mounts'}
+        unknown = set(raw) - {'sandbox', 'images', 'mounts', 'setup'}
         if unknown:
             raise ValueError(f'unknown config sections: {sorted(unknown)}')
         sc = raw.get('sandbox', {})
         im = raw.get('images', {})
         extra_mounts = raw.get('mounts', [])
+        setup_raw = raw.get('setup', {})
+        if not isinstance(setup_raw, dict) or set(setup_raw) - set(SETUP_DEFAULT):
+            raise ValueError('unknown setup configuration key')
+        setup.update(setup_raw)
         if not isinstance(sc, dict) or not isinstance(im, dict):
             raise ValueError('config sections must be TOML tables')
         if set(sc) - set(DEFAULT) - LEGACY:
@@ -77,6 +86,11 @@ def load():
     for k, v in images.items():
         if not isinstance(v, str) or not v.strip() or '\n' in v:
             raise ValueError(f'invalid image tag: {k}')
+    if not isinstance(setup['recipes_dir'], str) or not setup['recipes_dir'].strip():
+        raise ValueError('setup.recipes_dir must be a nonempty path')
+    if type(setup['confirm_host_execution']) is not bool:
+        raise ValueError('setup.confirm_host_execution must be boolean')
+    obj['setup'] = setup
     if not isinstance(extra_mounts, list):
         raise ValueError('mounts must be an array of TOML tables ([[mounts]])')
     parsed_mounts = []

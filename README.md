@@ -77,9 +77,10 @@ Installed layout (XDG paths honored where applicable):
 ~/.config/sandbox/config.toml            # User configuration
 ~/.config/sandbox/denylist.txt           # Sensitive identifiers (600)
 ~/.config/sandbox/apps/opencode.jsonc    # Optional OpenCode config
+~/.config/sandbox/recipes/*.sh        # Trusted host-side setup recipes
 ```
 
-`install.sh` does **not** overwrite existing config or denylist files. It installs `.dockerignore` if present, or generates a safe default when missing. Upgrading from v0.1 is supported; existing `[sandbox]` settings `mount_global_skills` / `opencode_config` and old `opencode*` image tags are accepted for compatibility, but no application images are built.
+`install.sh` does **not** overwrite existing config, denylist, or recipe files. It installs `.dockerignore` if present, or generates a safe default when missing. Upgrading from v0.1 is supported; existing `[sandbox]` settings `mount_global_skills` / `opencode_config` and old `opencode*` image tags are accepted for compatibility, but no application images are built.
 
 ## 3. Build runtime images (explicit and cached)
 
@@ -163,6 +164,16 @@ target = "/root/.config/opencode/opencode.jsonc"
 optional = true
 ```
 
+The optional `[setup]` section controls host-side recipes:
+
+```toml
+[setup]
+recipes_dir = "~/.config/sandbox/recipes"
+confirm_host_execution = true
+```
+
+Recipes are executable `.sh` files on your **host**, never inside the Git repository. They are installed into `~/.config/sandbox/recipes/` only when missing, so your edits survive upgrades. Setup requires an explicit command, and by default asks for confirmation before running the host script (use `--yes` for noninteractive workflows). Use `sandbox setup list` to discover recipes; files must be owned by you and not writable by group/others. These scripts are trusted programs with host privileges, so inspect them before using them.
+
 The installed template also includes `~/.claude/skills`. Generic `[[mounts]]` are read-only in **every runtime container**, not only when OpenCode happens to run. They're scanned by the preflight in anonymized sandboxes. The host-managed shared tools directory is **not** scanned for denylist terms (to avoid matching arbitrary binary bytes), but is still mounted read-only. Only put trusted executables there; the agent can read their contents. You can mount other host configuration/skill files deliberately, but they may contain secrets. The host's entire home, SSH agent, Git config, and Docker socket are never mounted automatically. If upgrading from an older config, the previous skill and OpenCode config options remain honored even without `[[mounts]]`.
 
 ## 6. Sandbox workflow
@@ -194,6 +205,42 @@ sandbox destroy agent --yes         # removes workspace and recorded volumes
 The source Git checkout must have no uncommitted or untracked changes when you call `create`. Preparation makes a fully independent clone, preserves branches and merge structure, removes remotes, and avoids shared Git object alternates. For anonymized sandboxes, `git-filter-repo` rewrites author, committer, and tagger names/emails to `Sandbox <sandbox@invalid>`. The host-only `commit-map` allows the importer to reconnect newly created commits to original ancestry and recreate multi-parent merges as host review branches with your host Git identity.
 
 **Import caveats:** The agent should commit intended changes; a branch import only transfers committed objects. Tags, notes, submodules, Git LFS and unusual hooks need additional work. Anonymization changes commit IDs, so translation relies on the private map. The importer does **not** change the source checkout or push to a remote.
+
+### Optional host-side setup recipes
+
+For the OpenCode browser-login workflow, first authenticate the **host** installation of OpenCode using your normal browser (once):
+
+```bash
+~/.local/share/sandbox/tools/bin/opencode auth login openai
+```
+
+After creating a sandbox, import your host OpenCode OpenAI login into that sandbox's persistent application-data volume:
+
+```bash
+sandbox setup list
+sandbox setup agent opencode-openai --runtime python-xpu
+# Or run the recipe just before entering the shell:
+sandbox run agent --runtime python-xpu --setup opencode-openai
+```
+
+The first successful execution records a completion marker for that sandbox. If you request the same recipe again, `sandbox` skips it unless you specify `--force` (standalone setup) or `--force-setup` (run shortcut). A credential revocation, lost volume, or changed host login requires re-running it manually:
+
+```bash
+sandbox setup agent opencode-openai --runtime python-xpu --force
+```
+
+Scripts are stored under `~/.config/sandbox/recipes/*.sh`, **outside any sandbox repository**, and executed on the Arch host after confirmation. `--yes` bypasses the confirmation prompt only; it does not force a repeated recipe. In a noninteractive shell, use `--yes`. For a new custom recipe, create a non-symlink `.sh` file in the recipes directory and `chmod 700` it. The script receives the sandbox name as `$1` and these environment variables:
+
+- `SANDBOX_NAME` — the sandbox name.
+- `SANDBOX_CLI` — absolute path to the installed sandbox CLI.
+- `SANDBOX_TOOLS_DIR` — host shared tools directory.
+- `SANDBOX_RUNTIME` — selected runtime (`base` or `python-xpu`).
+
+The supplied `opencode-openai` recipe executes the host CLI's `auth export openai`, then pipes its stdout through `sandbox exec` to `opencode auth import` inside the sandbox. No secrets are written to your host repository or printed by the recipe; the importer uses a private temporary file *inside the ephemeral container*. Credentials then persist in the sandbox's app-data Docker volume and remain accessible to commands running inside that sandbox. **This is convenience, not credential isolation from the agent.**
+
+The recipe's standalone `setup` command defaults to the `base` runtime; use `--runtime python-xpu` if you only built the XPU runtime. `run --setup` automatically uses the runtime selected for the run.
+
+These recipes **never run automatically** on ordinary `sandbox run` or `sandbox create`. A success marker lives in host-side sandbox metadata; if you manually delete the authentication volume, use `--force` to repopulate it. Scripts that fail aren't marked completed. `sandbox destroy` removes the metadata marker together with the sandbox.
 
 ### Private denylist
 
@@ -267,6 +314,7 @@ images/{preparer,base,python-xpu}/ # minimal runtime image family
 tools/install-opencode.sh         # official standalone OpenCode archive
 tools/install-jq.sh               # pinned & checksum-verified jq
 tools/sandbox-py                   # persistent Python venvs + pip constraints
+recipes/opencode-openai.sh         # trusted host browser-login credential transfer
 examples/config.toml             # generic mount configuration
 install.sh                        # optional interactive tool selection
 ```

@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -259,9 +260,92 @@ def runtime_args(path, meta, cfg, runtime, command):
     return args + [image] + command
 
 
+def recipes_directory(cfg):
+    """Host-owned scripts only; never read recipes from the sandbox repository."""
+    raw = cfg.get('setup', {}).get('recipes_dir', '~/.config/sandbox/recipes')
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError('setup.recipes_dir must be an absolute path or start with ~')
+    if path.is_symlink():
+        raise ValueError('recipes directory must not be a symlink')
+    if not path.is_dir():
+        raise ValueError(f'recipes directory not found: {path}; rerun install.sh')
+    st = path.stat()
+    if st.st_uid != os.getuid() or st.st_mode & 0o022:
+        raise ValueError('recipes directory must be owned by you and not group/world writable')
+    return path
+
+
+def recipe_script(cfg, recipe):
+    if not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_-]*', recipe):
+        raise ValueError('invalid recipe name')
+    path = recipes_directory(cfg) / (recipe + '.sh')
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f'unknown setup recipe: {recipe}')
+    st = path.stat()
+    if st.st_uid != os.getuid() or st.st_mode & 0o022:
+        raise ValueError('recipe must be owned by you and not group/world writable')
+    if not os.access(path, os.X_OK):
+        raise ValueError(f'recipe is not executable: {path}')
+    return path
+
+
+def apply_setup(name, recipe, cfg, *, force=False, yes=False, runtime="base"):
+    path, meta = load_instance(name)
+    script = recipe_script(cfg, recipe)
+    completed = meta.get('setup_recipes', {})
+    if recipe in completed and not force:
+        print(f'Setup {recipe} already applied to {name}; use --force to run again.')
+        return False
+    if cfg.get('setup', {}).get('confirm_host_execution', True) and not yes:
+        print(f'Host-side setup script: {script}')
+        print(f'Target sandbox: {name}; this script may access host credentials.')
+        if not sys.stdin.isatty():
+            raise ValueError('setup requires interactive confirmation or --yes')
+        answer = input('Execute this trusted host script? [y/N] ').strip().lower()
+        if answer not in ('y', 'yes'):
+            raise ValueError('setup cancelled')
+    # Explicit setup is never launched from a repository-controlled file.
+    # The recipe may use the sandbox CLI, including stdin pipelines for secrets.
+    env = os.environ.copy()
+    env.update(SANDBOX_NAME=name,
+               SANDBOX_CLI=str(Path.home() / '.local/bin/sandbox'),
+               SANDBOX_RUNTIME=runtime,
+               SANDBOX_TOOLS_DIR=str(resource_dir() / 'tools'))
+    subprocess.run([str(script), name], check=True, env=env)
+    # Only record success, so a failed import can be retried normally.
+    _, latest = load_instance(name)
+    latest.setdefault('setup_recipes', {})[recipe] = datetime.now(timezone.utc).isoformat()
+    save_instance(path, latest)
+    print(f'Setup {recipe} completed for {name}.')
+    return True
+
+
+def command_setup(args, cfg):
+    if args.name == 'list':
+        if args.recipe is not None:
+            raise ValueError('usage: sandbox setup list')
+        for script in sorted(recipes_directory(cfg).glob('*.sh')):
+            if script.is_file() and not script.is_symlink():
+                try:
+                    recipe_script(cfg, script.stem)
+                except ValueError:
+                    continue
+                print(script.stem)
+        return
+    if args.recipe is None:
+        raise ValueError('usage: sandbox setup NAME RECIPE')
+    docker_rootless()
+    apply_setup(args.name, args.recipe, cfg, force=args.force, yes=args.yes, runtime=args.runtime)
+
+
 def command_run(args, cfg):
     path, meta = load_instance(args.name)
     docker_rootless()
+    for recipe in args.setup:
+        apply_setup(args.name, recipe, cfg, force=args.force_setup, yes=args.yes, runtime=args.runtime)
+    # Reload after host-side recipes complete; they may update sandbox metadata.
+    path, meta = load_instance(args.name)
     try:
         subprocess.run(runtime_args(path, meta, cfg, args.runtime, ['/bin/bash']), check=True)
     except subprocess.CalledProcessError as exc:
@@ -344,7 +428,18 @@ def parser():
     run = sub.add_parser('run', help='launch an interactive shell in a sandbox')
     run.add_argument('name')
     run.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')
+    run.add_argument('--setup', action='append', default=[], metavar='RECIPE',
+                     help='apply trusted host setup recipe before starting')
+    run.add_argument('--force-setup', action='store_true', help='reapply an already completed recipe')
+    run.add_argument('--yes', action='store_true', help='confirm execution of host recipes')
     run.set_defaults(handler=command_run)
+    setup = sub.add_parser('setup', help='run a trusted host-side recipe or list recipes')
+    setup.add_argument('name', help='sandbox name, or list')
+    setup.add_argument('recipe', nargs='?', help='recipe name')
+    setup.add_argument('--force', action='store_true', help='reapply a completed recipe')
+    setup.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')
+    setup.add_argument('--yes', action='store_true', help='confirm host script execution')
+    setup.set_defaults(handler=command_setup)
     exe = sub.add_parser('exec', help='execute a command in an ephemeral container')
     exe.add_argument('name')
     exe.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')

@@ -34,3 +34,8 @@ optional = true
 source = "~/.config/sandbox/apps/opencode.jsonc"
 target = "/root/.config/opencode/opencode.jsonc"
 optional = true
+
+# Optional trusted host-side setup recipes. Never load recipes from a repo.
+[setup]
+recipes_dir = "~/.config/sandbox/recipes"
+confirm_host_execution = true
