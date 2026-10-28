@@ -114,5 +114,3 @@ Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**,
 This project was developed with substantial AI assistance, with human direction, testing, and integration.
 
 It is provided as-is. Although designed with isolation and security in mind, **it has not undergone an independent security audit**. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
-
-A final open-source license has not yet been added. Choose one before publishing this repository as openly licensed software.
