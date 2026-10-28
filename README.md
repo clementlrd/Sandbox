@@ -132,11 +132,10 @@ Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**,
 - [Security and privacy limitations](docs/security.md)
 - [Uninstall and data cleanup](docs/uninstall.md)
 - [Development and testing](docs/development.md)
-- [Publication checklist](docs/publication-checklist.md)
 - [GitHub Actions CI explained](docs/ci.md)
 
-## Development
+## About this project
 
 This project was developed with substantial AI assistance, with human direction, testing, and integration.
 
-It is provided as-is. Although designed with isolation and security in mind, **it has not undergone an independent security audit**. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+This is a personal utility shared as-is for others who may find it useful. No support or ongoing maintenance is promised. It has not undergone an independent security audit; see [Security and privacy limitations](docs/security.md).

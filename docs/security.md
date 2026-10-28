@@ -47,10 +47,6 @@ Rootless Docker executes the daemon and containers without host root privileges;
 
 The current CLI runs containers as UID 0 inside the *rootless user namespace*, sets `HOME=/root` and supports only Linux-compatible images with a functional `/bin/sh`. It is not yet designed to support every `USER`, entrypoint, distro or GPU configuration.
 
-## Security review checklist for maintainers
-
-Before a broad public release, review at least: filesystem mount target collisions, symlink traversal, Git configuration/hooks/filters, import/update-ref safety, historical and non-text leaks, denial-of-service resource exhaustion, race conditions in setup/destroy, credential handling (stdin/temporary files), downloaded binary verification, third-party Dockerfile build contexts, and the behavior of rootless device mappings. Run container-based end-to-end tests rather than relying solely on mocks.
-
 References: [Docker rootless mode](https://docs.docker.com/engine/security/rootless/), [Docker rootless limitations](https://docs.docker.com/engine/security/rootless/troubleshoot/).
 
 ## One-time denylist bypass

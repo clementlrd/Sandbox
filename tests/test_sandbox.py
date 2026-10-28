@@ -94,8 +94,8 @@ class GitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'denylist match'):
             preflight.scan(other, self.denylist)
 
-    def test_publication_audit_is_not_a_cli_command(self):
-        # Contributor authorship is legitimate; denylist is a sandbox preflight.
+    def test_denylist_is_not_a_generic_audit_command(self):
+        # Denylist scanning is a create-time anonymization operation.
         with self.assertRaises(SystemExit):
             cli.parser().parse_args(['audit', '.'])
 

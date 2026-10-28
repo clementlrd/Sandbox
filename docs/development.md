@@ -30,9 +30,8 @@ These tests cover configuration, Git history preparation/import, preflight, CLI 
 ## GitHub Actions continuous integration
 
 The repository includes [`.github/workflows/tests.yml`](../.github/workflows/tests.yml).
-It automatically runs syntax checks and the Python/Git test suite on pushes
-and pull requests, using Python 3.11, 3.12, and 3.13 on GitHub-hosted Ubuntu
-runners. It does **not** run Docker, rootless isolation, or GPU integration
+It runs syntax checks and the Python/Git test suite on pushes, or manually,
+using Python 3.11, 3.12, and 3.13 on GitHub-hosted Ubuntu runners. It does **not** run Docker, rootless isolation, or GPU integration
 checks; see [CI guide](ci.md). No repository secrets or custom runner are
 required for these tests.
 
@@ -56,7 +55,7 @@ Then test anonymized history with synthetic identities and a denylist; deliberat
 
 ## Adding a new runtime
 
-Usually **do not edit Python source**. Add `[runtimes.NAME]` in `config.toml`, reference a working Docker image, and optionally give its Dockerfile/context. See [Adding a runtime](runtimes.md). Contributions with a new example runtime may go in `examples/runtimes/` without making that runtime a mandatory package dependency.
+Usually **do not edit Python source**. Add `[runtimes.NAME]` in `config.toml`, reference a working Docker image, and optionally give its Dockerfile/context. See [Adding a runtime](runtimes.md). Optional example runtime Dockerfiles can live in `examples/runtimes/` without making their dependencies mandatory.
 
 A profile should not hardcode language or GPU checks into core `cli.py`. Device passthrough and per-image venv persistence belong to the configurable profile. New image recipes must preserve Docker layer/cache reuse and must not copy the user's repository into the build context.
 
@@ -64,8 +63,6 @@ A profile should not hardcode language or GPU checks into core `cli.py`. Device 
 
 The installer preserves user-maintained configuration, denylist and recipes. New images are *not* automatically substituted into existing sandboxes, which pin exact image IDs. Changes to the volume schema or Git import graph must be tested and documented with clear data-loss warnings.
 
-## Roadmap
+## Maintaining a local copy
 
-See [publication checklist](publication-checklist.md). High-value next tasks: true rootless Docker end-to-end tests, a documented threat model reviewed by a second maintainer, improved cleanup/recovery, and more robust imported Git metadata/submodules/LFS handling. Avoid adding an app-specific plugin system unless a concrete repeated use case justifies it.
-
-Test the strict configuration parser and generic runtime build resolution whenever those interfaces change.
+When changing runtime definitions or storage behavior, run the local tests and verify a rootless Docker session on your machine. Test the strict configuration parser and generic runtime build resolution when those interfaces change.

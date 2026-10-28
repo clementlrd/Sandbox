@@ -1,7 +1,7 @@
 # Continuous integration (GitHub Actions)
 
 The repository includes [`.github/workflows/tests.yml`](../.github/workflows/tests.yml).
-It runs automatically after a push or pull request, and can be started manually
+It runs automatically after a push, and can also be started manually
 from the Actions tab using **Run workflow** (`workflow_dispatch`).
 
 ## What runs
@@ -33,9 +33,8 @@ If no runs appear, check **Repository Settings → Actions → General** to see
 whether Actions and the referenced public actions are allowed. Organization
 policies can also restrict them. The **Actions** tab shows each job's logs.
 
-Optional: once you have a reliable green run, add a branch ruleset requiring
-these checks before merging pull requests. Don't require a GPU test that the
-workflow doesn't provide.
+The workflow is for checking this shared personal utility, not a contribution
+or pull-request process. It does not require any GitHub repository secrets.
 
 ## Run the same tests locally
 
@@ -50,6 +49,5 @@ python -m unittest discover -s tests -v
 To validate behavior that CI cannot cover, use a rootless Linux Docker daemon
 and follow [Development and testing](development.md#reproduce-manually-on-linux).
 
-Before making a repository public, independently review the committed content
-and history for secrets. The sandbox's denylist preflight serves anonymized
-runtime preparation; it is not a publication or contributor-name check.
+The denylist preflight is used only when preparing anonymized sandboxes;
+it is not a general source-code or secret scanner.
