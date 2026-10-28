@@ -1,18 +1,36 @@
-# Copied to ~/.config/sandbox/config.toml
+# Copied to ~/.config/sandbox/config.toml (existing settings are never overwritten).
 [sandbox]
 memory = "8g"
 pids_limit = 512
-network = "bridge"                 # "bridge" (Internet) or "none"
-gpu_devices = []                   # e.g. ["/dev/dri/renderD128"]
-forward_env = []                   # e.g. ["ANTHROPIC_API_KEY"]; secrets visible inside agent
-mount_global_skills = true        # OpenCode only; read-only mounts
-opencode_config = "apps/opencode.jsonc"
-venv_volume = true                # persistent per-sandbox, per-image-ID virtualenv storage
+network = "bridge"               # "bridge" (Internet) or "none"
+gpu_devices = []                 # e.g. ["/dev/dri/renderD128"]
+forward_env = []                 # e.g. ["ANTHROPIC_API_KEY"] (readable in sandbox)
+venv_volume = true              # per-sandbox, per-runtime-image Python venvs
+shared_tools = true             # $XDG_DATA_HOME/sandbox/tools -> /opt/tools, read-only
 
-# Stable local image tags. `sandbox build` NEVER runs implicitly.
 [images]
 preparer = "sandbox/preparer:v1"
 base = "sandbox/base:v1"
 python-xpu = "sandbox/python-xpu:v1"
-opencode = "sandbox/opencode:v1"
-opencode-xpu = "sandbox/opencode-xpu:v1"
+
+# Generic optional mounts for application configuration/skills. Available in ALL
+# runtime sessions; no app-profile handling in the sandbox CLI.
+[[mounts]]
+source = "~/.config/opencode/skills"
+target = "/root/.config/opencode/skills"
+optional = true
+
+[[mounts]]
+source = "~/.agents/skills"
+target = "/root/.agents/skills"
+optional = true
+
+[[mounts]]
+source = "~/.claude/skills"
+target = "/root/.claude/skills"
+optional = true
+
+[[mounts]]
+source = "~/.config/sandbox/apps/opencode.jsonc"
+target = "/root/.config/opencode/opencode.jsonc"
+optional = true

@@ -188,46 +188,215 @@ class GitTests(unittest.TestCase):
         self.assertEqual(cmd(self.original, 'log', '-1', '--format=%an <%ae>', tip),
                          'Real Person <real@example.invalid>')
 
-    def test_gpu_volume_shared_between_shell_and_opencode(self):
+    def test_shared_tools_mount_and_python_path_preservation(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
         cfg['images'] = settings.IMAGES.copy()
+        cfg['mounts'] = []
+        cfg['_legacy'] = {}
         cfg['gpu_devices'] = []
-        with mock.patch.object(cli, 'pinned_image', side_effect=lambda meta, path, profile, cfg:
-                               'sha256:' + ('b' * 64 if profile == 'python-xpu' else 'a' * 64)), \
-             mock.patch.object(cli, 'remember_volume') as volumes, \
-             mock.patch.object(cli, 'app_mounts', return_value=[]):
-            meta = {'id': 'abcd', 'name': 'test', 'anonymized': False, 'runtime_images': {}, 'volumes': []}
-            first = cli.runtime_args(self.root, meta, cfg, 'python-xpu', 'shell', ['python'])
-            second = cli.runtime_args(self.root, meta, cfg, 'opencode-xpu', 'opencode', ['opencode'])
+        tools = self.root / 'resources/tools/bin'
+        tools.mkdir(parents=True)
+        meta = {'id': 'abcd', 'name': 'test', 'anonymized': False,
+                'runtime_images': {}, 'volumes': []}
+        with mock.patch.object(cli, 'resource_dir', return_value=self.root / 'resources'), \
+             mock.patch.object(cli, 'pinned_image', return_value='sha256:' + 'b' * 64), \
+             mock.patch.object(cli, 'remember_volume') as volumes:
+            first = cli.runtime_args(self.root, meta, cfg, 'python-xpu', ['/bin/bash'])
+            second = cli.runtime_args(self.root, meta, cfg, 'python-xpu', ['python', '-V'])
         self.assertIn('sandbox-venvs-bbbbbbbbbbbb-abcd', ' '.join(first))
         self.assertIn('sandbox-venvs-bbbbbbbbbbbb-abcd', ' '.join(second))
+        self.assertIn(f'type=bind,src={tools.parent},dst=/opt/tools,readonly', first)
+        self.assertIn('export PATH="/opt/tools/bin:$PATH"; exec "$@"', first)
+        self.assertNotIn('PATH=/opt/tools/bin:', first)
+        self.assertEqual(first[-2:], ['sandbox-entry', '/bin/bash'])
+        self.assertEqual(second[-3:], ['sandbox-entry', 'python', '-V'])
+        self.assertIn('sandbox-app-data-abcd', ' '.join(first))
+        self.assertIn('sandbox-app-config-abcd', ' '.join(first))
+        self.assertIn('sandbox-app-cache-abcd', ' '.join(first))
 
-    def test_mount_options_and_profile(self):
-        self.assertEqual(cli.image_profile('opencode', 'python-xpu'), 'opencode-xpu')
-        self.assertEqual(cli.image_profile('shell', 'base'), 'base')
+    def test_anonymized_scans_shared_tools_and_skills(self):
+        from sandboxlib import settings
+        cfg = settings.DEFAULT.copy()
+        cfg['images'] = settings.IMAGES.copy()
+        cfg['mounts'] = []
+        cfg['_legacy'] = {}
+        tools = self.root / 'resources/tools/bin'
+        tools.mkdir(parents=True)
+        skill = self.root / 'skills'
+        skill.mkdir()
+        cfg['mounts'] = [(str(skill), '/root/.agents/skills', False)]
+        meta = {'id': 'abcd', 'name': 'test', 'anonymized': True,
+                'denylist': str(self.denylist), 'preparer_image': 'sha256:'+'1'*64,
+                'runtime_images': {}, 'volumes': []}
+        with mock.patch.object(cli, 'resource_dir', return_value=self.root / 'resources'), \
+             mock.patch.object(cli, 'pinned_image', return_value='sha256:' + 'b' * 64), \
+             mock.patch.object(cli, 'remember_volume'), \
+             mock.patch.object(cli, 'check_container') as checker:
+            cli.runtime_args(self.root, meta, cfg, 'base', ['/bin/bash'])
+        extras = checker.call_args.args[-1]
+        self.assertIn((tools.parent.resolve(), '/opt/tools'), extras)
+        self.assertIn((skill.resolve(), '/root/.agents/skills'), extras)
+
+    def test_mount_options_and_legacy_compatibility(self):
+        from sandboxlib import settings
+        self.assertEqual(cli.image_profile('python-xpu'), 'python-xpu')
         with self.assertRaises(ValueError):
-            cli.image_profile('shell', 'bogus')
+            cli.image_profile('bogus')
         self.assertEqual(cli.parser().parse_args(['create', 'test', '/a']).anonymize, False)
         self.assertTrue(cli.parser().parse_args(['create', 'test', '/a', '--anonymize']).anonymize)
+        with self.assertRaises(SystemExit):
+            cli.parser().parse_args(['run', 'foo', '--app', 'opencode'])
         self.assertEqual(cli.main(['exec', 'abc', 'python', '-V']), 2)
+        cfg = settings.DEFAULT.copy()
+        cfg['mounts'] = []
+        cfg['_legacy'] = {'mount_global_skills': True, 'opencode_config': ''}
+        with mock.patch.dict(os.environ, {'HOME': str(self.root)}):
+            expected = self.root / '.agents/skills'
+            expected.mkdir(parents=True)
+            mounts = settings.read_only_mounts(cfg)
+        self.assertIn((expected.resolve(), '/root/.agents/skills'), mounts)
 
-    def test_build_command_does_not_autobuild_parent(self):
+    def test_legacy_and_generic_mounts_deduplicate(self):
+        from sandboxlib import settings
+        with mock.patch.dict(os.environ, {'HOME': str(self.root)}):
+            source = self.root / '.agents/skills'
+            source.mkdir(parents=True)
+            cfg = {'mounts': [('~/.agents/skills', '/root/.agents/skills', True)],
+                   '_legacy': {'mount_global_skills': True}}
+            self.assertEqual(settings.read_only_mounts(cfg),
+                             [(source.resolve(), '/root/.agents/skills')])
+
+    def test_opencode_installer_extracts_standalone_tarball(self):
+        import hashlib
+        import io
+        import tarfile
+        project = Path(__file__).resolve().parents[1]
+        root = self.root / 'fake'
+        root.mkdir()
+        archive = self.root / 'release.tar.gz'
+        with tarfile.open(archive, 'w:gz') as tf:
+            data = b'#!/bin/sh\nprintf "fake opencode\\n"\n'
+            info = tarfile.TarInfo('opencode')
+            info.size = len(data)
+            info.mode = 0o755
+            tf.addfile(info, io.BytesIO(data))
+        fake_bin = root / 'bin'
+        fake_bin.mkdir()
+        curl = fake_bin / 'curl'
+        curl.write_text("""#!/usr/bin/env bash
+set -euo pipefail
+while (( $# )); do
+  if [[ "$1" == "-o" ]]; then
+    shift
+    cp "$FAKE_ARCHIVE" "$1"
+    exit 0
+  fi
+  shift
+done
+exit 2
+""")
+        curl.chmod(0o755)
+        env = os.environ.copy()
+        env.update(PATH=str(fake_bin) + ':' + env['PATH'],
+                   FAKE_ARCHIVE=str(archive),
+                   OPENCODE_SHA256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+                   OPENCODE_VERSION='2.0.0')
+        tools_dir = self.root / 'tools'
+        subprocess.run(['bash', str(project / 'tools/install-opencode.sh'), str(tools_dir)],
+                       check=True, capture_output=True, env=env)
+        self.assertEqual((tools_dir / 'bin/opencode').read_bytes(), data)
+        self.assertTrue(os.access(tools_dir / 'bin/opencode', os.X_OK))
+        env['OPENCODE_SHA256'] = '0' * 64
+        with self.assertRaises(subprocess.CalledProcessError):
+            subprocess.run(['bash', str(project / 'tools/install-opencode.sh'), str(tools_dir)],
+                           check=True, capture_output=True, env=env)
+        self.assertEqual((tools_dir / 'bin/opencode').read_bytes(), data)
+
+    def test_config_parses_new_and_old_image_tags(self):
+        from sandboxlib import settings
+        config = self.root / 'config'
+        config.mkdir()
+        (config / 'config.toml').write_text("""
+[sandbox]
+shared_tools = true
+mount_global_skills = true
+[images]
+base = "sandbox/base:v3"
+opencode = "sandbox/opencode:v1"
+[[mounts]]
+source = "~/example"
+target = "/root/example"
+optional = true
+""")
+        with mock.patch.object(settings, 'config_dir', return_value=config):
+            cfg = settings.load()
+        self.assertTrue(cfg['shared_tools'])
+        self.assertEqual(cfg['images']['base'], 'sandbox/base:v3')
+        self.assertNotIn('opencode', cfg['images'])
+        self.assertEqual(cfg['mounts'][0][1], '/root/example')
+
+    def test_build_command_explicit_targets_only(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
         cfg['images'] = settings.IMAGES.copy()
         fake = self.root / 'resources'
-        (fake / 'images/opencode').mkdir(parents=True)
-        (fake / 'images/opencode/Dockerfile').write_text('FROM scratch')
-        args = type('A', (), {'image': 'opencode-xpu', 'no_cache': False, 'pull': False})()
+        (fake / 'images/python-xpu').mkdir(parents=True)
+        (fake / 'images/python-xpu/Dockerfile').write_text('FROM scratch')
+        args = type('A', (), {'image': 'python-xpu', 'no_cache': False, 'pull': False})()
         with mock.patch.object(cli, 'docker_rootless'), \
-             mock.patch.object(cli, 'inspect_image', return_value='sha256:abc'), \
              mock.patch.object(cli, 'resource_dir', return_value=fake), \
              mock.patch.object(cli, 'call') as c:
             cli.command_build(args, cfg)
         command = c.call_args.args[0]
         self.assertEqual(command.count('build'), 1)
-        self.assertIn('BASE_IMAGE=sandbox/python-xpu:v1', command)
+        self.assertNotIn('BASE_IMAGE=', ' '.join(command))
+        with self.assertRaises(SystemExit):
+            cli.parser().parse_args(['build', 'opencode'])
+
+    def test_tools_install_noninteractive_and_preserve_config(self):
+        # Run the actual installer without requesting network downloads.
+        project = Path(__file__).resolve().parents[1]
+        home = self.root / 'home'
+        home.mkdir()
+        env = os.environ.copy()
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
+                   XDG_DATA_HOME=str(home / '.local/share'))
+        subprocess.run(['bash', str(project / 'install.sh'), '--no-tools'],
+                       env=env, capture_output=True, check=True)
+        shared = home / '.local/share/sandbox/tools/bin'
+        self.assertTrue(shared.is_dir())
+        self.assertTrue((home / '.local/share/sandbox/tool-installers/install-jq.sh').is_file())
+        self.assertTrue((home / '.local/share/sandbox/tool-installers/install-opencode.sh').is_file())
+        config = home / '.config/sandbox/config.toml'
+        config.write_text('# user customized\n')
+        subprocess.run(['bash', str(project / 'install.sh'), '--no-tools'],
+                       env=env, capture_output=True, check=True)
+        self.assertEqual(config.read_text(), '# user customized\n')
+
+    def test_tools_install_prompts_and_selects_scripts(self):
+        # Stub the two tool installers rather than hitting external networks.
+        project = Path(__file__).resolve().parents[1]
+        shadow = self.root / 'shadow'
+        import shutil
+        shutil.copytree(project / 'tools', shadow / 'tools')
+        shutil.copy(project / 'install.sh', shadow / 'install.sh')
+        shutil.copytree(project / 'bin', shadow / 'bin')
+        shutil.copytree(project / 'libexec', shadow / 'libexec')
+        shutil.copytree(project / 'images', shadow / 'images')
+        shutil.copytree(project / 'examples', shadow / 'examples')
+        for tool in ('opencode', 'jq'):
+            file = shadow / 'tools' / f'install-{tool}.sh'
+            file.write_text(f'#!/bin/bash\nset -e\nprintf "{tool}\n" >> "$1/installed.txt"\n')
+        home = self.root / 'home'
+        home.mkdir()
+        env = os.environ.copy()
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
+                   XDG_DATA_HOME=str(home / '.local/share'))
+        subprocess.run(['bash', str(shadow / 'install.sh'), '--tools', 'opencode,jq'],
+                       check=True, capture_output=True, env=env)
+        installed = (home / '.local/share/sandbox/tools/installed.txt').read_text().splitlines()
+        self.assertEqual(installed, ['opencode', 'jq'])
 
 if __name__ == '__main__':
     unittest.main()

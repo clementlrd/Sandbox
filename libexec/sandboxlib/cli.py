@@ -12,7 +12,7 @@ import uuid
 from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
-from .settings import app_mounts, load
+from .settings import read_only_mounts, load
 
 
 def call(args, *, capture=False, env=None):
@@ -166,11 +166,9 @@ def command_inspect(args, cfg):
     print(json.dumps(meta, indent=2))
 
 
-def image_profile(app, runtime):
+def image_profile(runtime):
     if runtime not in ('base', 'python-xpu'):
         raise ValueError('runtime must be base or python-xpu')
-    if app == 'opencode':
-        return 'opencode-xpu' if runtime == 'python-xpu' else 'opencode'
     return runtime
 
 
@@ -195,12 +193,23 @@ def remember_volume(meta, path, name):
         save_instance(path, meta)
 
 
-def runtime_args(path, meta, cfg, profile, app, command):
+def runtime_args(path, meta, cfg, runtime, command):
+    """Compose one ephemeral shell/command container, with generic shared tools.
+
+    The image's original PATH is preserved by prepending /opt/tools/bin *inside*
+    the container. In particular, the Intel XPU image needs /opt/venv/bin.
+    """
+    profile = image_profile(runtime)
     image = pinned_image(meta, path, profile, cfg)
-    mounts = app_mounts(cfg, app)
+    mounts = read_only_mounts(cfg)
+    if cfg['shared_tools']:
+        tools = resource_dir() / 'tools'
+        if not (tools / 'bin').is_dir():
+            raise ValueError(f'shared tools directory missing at {tools}; rerun install.sh')
+        mounts.append((tools.resolve(strict=True), '/opt/tools'))
     if meta['anonymized']:
         deny = denylist_path(meta['denylist'])
-        # Pinned preparer version ensures stable preflight logic for a session.
+        # Scan all read-only host mounts as well as the repository.
         check_container(meta['preparer_image'], path / 'repo', deny, mounts)
     args = ['docker', 'run', '--rm', '--init', '--interactive',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
@@ -215,18 +224,23 @@ def runtime_args(path, meta, cfg, profile, app, command):
     if sys.stdin.isatty() and sys.stdout.isatty():
         args.append('--tty')
     if cfg['venv_volume']:
-        # One venv store per base Python runtime, shared by shell and OpenCode.
-        # Pin the parent runtime image independently from its application layer.
-        parent_profile = ('python-xpu' if profile in ('python-xpu', 'opencode-xpu') else 'base')
-        parent_id = pinned_image(meta, path, parent_profile, cfg)
-        venv_name = volume_name(meta, 'venvs-' + parent_id.split(':', 1)[1][:12])
+        venv_name = volume_name(meta, 'venvs-' + image.split(':', 1)[1][:12])
         remember_volume(meta, path, venv_name)
         args += ['--mount', f'type=volume,src={venv_name},dst=/opt/venvs']
-    if app == 'opencode':
-        state_volume = volume_name(meta, 'opencode')
-        remember_volume(meta, path, state_volume)
-        args += ['--mount', f'type=volume,src={state_volume},dst=/root/.local/share/opencode']
-    if profile in ('python-xpu', 'opencode-xpu'):
+    # Generic, per-sandbox application state, independent of executable/profile.
+    for suffix, dest in (
+        ('app-data', '/root/.local/share'),
+        ('app-config', '/root/.config'),
+        ('app-cache', '/root/.cache'),
+    ):
+        name = volume_name(meta, suffix)
+        remember_volume(meta, path, name)
+        args += ['--mount', f'type=volume,src={name},dst={dest}']
+    # Backward compatibility: reuse OpenCode state from an older sandbox version.
+    legacy_state = volume_name(meta, 'opencode')
+    if legacy_state in meta.get('volumes', []):
+        args += ['--mount', f'type=volume,src={legacy_state},dst=/root/.local/share/opencode']
+    if profile == 'python-xpu':
         for device in cfg['gpu_devices']:
             if not Path(device).is_char_device():
                 raise ValueError('GPU render device is missing: ' + device)
@@ -236,17 +250,19 @@ def runtime_args(path, meta, cfg, profile, app, command):
         args += ['--mount', mount_spec(source, dest, True)]
     for key in cfg['forward_env']:
         if key in os.environ:
-            args += ['--env', key]  # forward from host environment by name
+            args += ['--env', key]
+    if cfg['shared_tools']:
+        # Do NOT replace PATH via docker --env: this must preserve /opt/venv/bin.
+        command = ['/bin/sh', '-c', 'export PATH="/opt/tools/bin:$PATH"; exec "$@"',
+                   'sandbox-entry', *command]
     return args + [image] + command
 
 
 def command_run(args, cfg):
     path, meta = load_instance(args.name)
     docker_rootless()
-    profile = image_profile(args.app, args.runtime)
-    cmd = ['opencode'] if args.app == 'opencode' else ['/bin/bash']
     try:
-        subprocess.run(runtime_args(path, meta, cfg, profile, args.app, cmd), check=True)
+        subprocess.run(runtime_args(path, meta, cfg, args.runtime, ['/bin/bash']), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -254,11 +270,10 @@ def command_run(args, cfg):
 def command_exec(args, cfg):
     path, meta = load_instance(args.name)
     docker_rootless()
-    command = args.command
-    if not command:
+    if not args.command:
         raise ValueError('expected command after --')
     try:
-        subprocess.run(runtime_args(path, meta, cfg, args.runtime, 'shell', command), check=True)
+        subprocess.run(runtime_args(path, meta, cfg, args.runtime, args.command), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -296,8 +311,7 @@ def command_build(args, cfg):
     if image not in cfg['images']:
         raise ValueError('unknown build target')
     context = resource_dir()
-    folder = 'opencode' if image == 'opencode-xpu' else image
-    dockerfile = context / 'images' / folder / 'Dockerfile'
+    dockerfile = context / 'images' / image / 'Dockerfile'
     if not dockerfile.is_file():
         raise ValueError(f'missing build resources at {context}; run install.sh')
     cmd = ['docker', 'build', '--progress=plain', '-f', str(dockerfile),
@@ -306,10 +320,6 @@ def command_build(args, cfg):
         cmd.append('--no-cache')
     if args.pull:
         cmd.append('--pull')
-    if image in ('opencode', 'opencode-xpu'):
-        parent = 'python-xpu' if image == 'opencode-xpu' else 'base'
-        inspect_image(cfg['images'][parent])
-        cmd += ['--build-arg', 'BASE_IMAGE=' + cfg['images'][parent]]
     cmd.append(str(context))
     env = os.environ.copy()
     env['DOCKER_BUILDKIT'] = '1'
@@ -330,9 +340,8 @@ def parser():
     info = sub.add_parser('inspect', help='show session metadata')
     info.add_argument('name')
     info.set_defaults(handler=command_inspect)
-    run = sub.add_parser('run', help='launch an application in a sandbox')
+    run = sub.add_parser('run', help='launch an interactive shell in a sandbox')
     run.add_argument('name')
-    run.add_argument('--app', choices=['shell', 'opencode'], default='shell')
     run.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')
     run.set_defaults(handler=command_run)
     exe = sub.add_parser('exec', help='execute a command in an ephemeral container')
@@ -348,7 +357,7 @@ def parser():
     destroy.add_argument('--yes', action='store_true')
     destroy.set_defaults(handler=command_destroy)
     build = sub.add_parser('build', help='explicitly build one cached image')
-    build.add_argument('image', choices=['preparer', 'base', 'python-xpu', 'opencode', 'opencode-xpu'])
+    build.add_argument('image', choices=['preparer', 'base', 'python-xpu'])
     build.add_argument('--no-cache', action='store_true')
     build.add_argument('--pull', action='store_true')
     build.set_defaults(handler=command_build)

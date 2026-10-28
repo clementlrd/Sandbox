@@ -1,46 +1,55 @@
-"""Read and validate the user-local configuration."""
+"""Read and validate user-local sandbox configuration, including generic mounts."""
 from __future__ import annotations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import tomllib
 from .common import config_dir
 
 DEFAULT = {
-  'memory': '8g',
-  'pids_limit': 512,
-  'network': 'bridge',
-  'gpu_devices': [],
-  'forward_env': [],
-  'mount_global_skills': True,
-  'opencode_config': 'apps/opencode.jsonc',
-  'venv_volume': True,
+    'memory': '8g',
+    'pids_limit': 512,
+    'network': 'bridge',
+    'gpu_devices': [],
+    'forward_env': [],
+    'venv_volume': True,
+    'shared_tools': True,
 }
+# Legacy config keys are accepted so upgrading does not discard users' skills.
+LEGACY = {'mount_global_skills', 'opencode_config'}
 IMAGES = {
-  'preparer': 'sandbox/preparer:v1',
-  'base': 'sandbox/base:v1',
-  'python-xpu': 'sandbox/python-xpu:v1',
-  'opencode': 'sandbox/opencode:v1',
-  'opencode-xpu': 'sandbox/opencode-xpu:v1',
+    'preparer': 'sandbox/preparer:v1',
+    'base': 'sandbox/base:v1',
+    'python-xpu': 'sandbox/python-xpu:v1',
 }
+
 
 def load():
     path = config_dir() / 'config.toml'
     obj = DEFAULT.copy()
     images = IMAGES.copy()
+    extra_mounts = []
     if path.is_file():
         with path.open('rb') as f:
             raw = tomllib.load(f)
-        unknown = set(raw) - {'sandbox', 'images'}
+        unknown = set(raw) - {'sandbox', 'images', 'mounts'}
         if unknown:
             raise ValueError(f'unknown config sections: {sorted(unknown)}')
         sc = raw.get('sandbox', {})
         im = raw.get('images', {})
+        extra_mounts = raw.get('mounts', [])
         if not isinstance(sc, dict) or not isinstance(im, dict):
             raise ValueError('config sections must be TOML tables')
-        if set(sc) - set(DEFAULT) or set(im) - set(IMAGES):
-            raise ValueError('unknown sandbox or image configuration key')
-        obj.update(sc)
-        images.update(im)
+        if set(sc) - set(DEFAULT) - LEGACY:
+            raise ValueError('unknown sandbox configuration key')
+        if set(im) - set(IMAGES) - {'opencode', 'opencode-xpu'}:
+            raise ValueError('unknown image configuration key')
+        # Ignore legacy OpenCode image tags: application images are no longer built.
+        obj.update({k: v for k, v in sc.items() if k in DEFAULT})
+        images.update({k: v for k, v in im.items() if k in IMAGES})
+        obj['_legacy'] = {k: sc[k] for k in LEGACY if k in sc}
+    else:
+        obj['_legacy'] = {}
+
     if not isinstance(obj['memory'], str) or not re.fullmatch(r'\d+[bkmgBKMG]?', obj['memory']):
         raise ValueError('memory must look like 8g')
     if type(obj['pids_limit']) is not int or not 1 <= obj['pids_limit'] <= 100000:
@@ -48,47 +57,79 @@ def load():
     if obj['network'] not in ('bridge', 'none'):
         raise ValueError('network must be bridge or none')
     if not isinstance(obj['gpu_devices'], list) or any(
-            not isinstance(s, str) or not re.fullmatch(r'/dev/dri/renderD\d+', s)
-            for s in obj['gpu_devices']):
+        not isinstance(s, str) or not re.fullmatch(r'/dev/dri/renderD\d+', s)
+        for s in obj['gpu_devices']):
         raise ValueError('gpu_devices must be /dev/dri/renderD* device paths')
     if len(set(obj['gpu_devices'])) != len(obj['gpu_devices']):
         raise ValueError('gpu_devices must be unique')
     if not isinstance(obj['forward_env'], list) or any(
-            not isinstance(s, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', s)
-            for s in obj['forward_env']):
+        not isinstance(s, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', s)
+        for s in obj['forward_env']):
         raise ValueError('forward_env must be an array of environment variable names')
-    for field in ('mount_global_skills', 'venv_volume'):
+    for field in ('venv_volume', 'shared_tools'):
         if type(obj[field]) is not bool:
             raise ValueError(field + ' must be boolean')
-    if not isinstance(obj['opencode_config'], str):
-        raise ValueError('opencode_config must be a string')
+    for field, value in obj['_legacy'].items():
+        if field == 'mount_global_skills' and type(value) is not bool:
+            raise ValueError('mount_global_skills must be boolean')
+        if field == 'opencode_config' and not isinstance(value, str):
+            raise ValueError('opencode_config must be a string')
     for k, v in images.items():
         if not isinstance(v, str) or not v.strip() or '\n' in v:
             raise ValueError(f'invalid image tag: {k}')
+    if not isinstance(extra_mounts, list):
+        raise ValueError('mounts must be an array of TOML tables ([[mounts]])')
+    parsed_mounts = []
+    for entry in extra_mounts:
+        if not isinstance(entry, dict) or set(entry) - {'source', 'target', 'optional'}:
+            raise ValueError('each [[mounts]] must contain only source, target, optional')
+        source, target, optional = (entry.get('source'), entry.get('target'), entry.get('optional', False))
+        if not isinstance(source, str) or not source.strip() or not isinstance(target, str):
+            raise ValueError('mount source and target must be nonempty strings')
+        if type(optional) is not bool:
+            raise ValueError('mount optional must be boolean')
+        dest = PurePosixPath(target)
+        if not dest.is_absolute() or '..' in dest.parts or str(dest) == '/':
+            raise ValueError('mount target must be an absolute normalized container path')
+        if target.startswith(('/workspace/', '/opt/tools/', '/opt/venvs/')) or target in ('/workspace', '/opt/tools', '/opt/venvs'):
+            raise ValueError('mount target conflicts with sandbox-managed paths')
+        parsed_mounts.append((source, target, optional))
+    obj['mounts'] = parsed_mounts
     obj['images'] = images
     return obj
 
 
-def app_mounts(cfg, app):
-    if app != 'opencode':
-        return []
-    result = []
-    if cfg['mount_global_skills']:
-        for sub, dst in (
-            ('.config/opencode/skills', '/root/.config/opencode/skills'),
-            ('.agents/skills', '/root/.agents/skills'),
-            ('.claude/skills', '/root/.claude/skills'),
-        ):
-            src = Path.home() / sub
-            if src.is_dir():
-                result.append((src.resolve(), dst))
-    value = cfg['opencode_config']
-    if value:
-        path = Path(value).expanduser()
+def read_only_mounts(cfg):
+    """Resolve configured host mounts. Existing OpenCode configs remain supported."""
+    specs = list(cfg.get('mounts', []))
+    legacy = cfg.get('_legacy', {})
+    if legacy.get('mount_global_skills', False):
+        specs += [
+            ('~/.config/opencode/skills', '/root/.config/opencode/skills', True),
+            ('~/.agents/skills', '/root/.agents/skills', True),
+            ('~/.claude/skills', '/root/.claude/skills', True),
+        ]
+    config = legacy.get('opencode_config', '')
+    if config:
+        path = Path(config).expanduser()
         if not path.is_absolute():
             path = config_dir() / path
-        if path.exists():
-            if not path.is_file():
-                raise ValueError('opencode_config must be a file')
-            result.append((path.resolve(), '/root/.config/opencode/opencode.jsonc'))
+        specs.append((str(path), '/root/.config/opencode/opencode.jsonc', True))
+    result = []
+    targets = {}
+    for source, target, optional in specs:
+        path = Path(source).expanduser()
+        if not path.exists():
+            if optional:
+                continue
+            raise ValueError(f'configured read-only mount does not exist: {path}')
+        if not path.is_dir() and not path.is_file():
+            raise ValueError(f'unsupported mount source: {path}')
+        resolved = path.resolve(strict=True)
+        if target in targets:
+            if targets[target] == resolved:
+                continue  # Same mount specified by both new and legacy configs.
+            raise ValueError(f'conflicting read-only mount target: {target}')
+        targets[target] = resolved
+        result.append((resolved, target))
     return result

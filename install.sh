@@ -5,13 +5,53 @@ BIN="$HOME/.local/bin"
 LIB="$HOME/.local/libexec/sandbox"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/sandbox"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox"
-install -d -m 755 "$BIN" "$LIB" "$DATA" "$DATA/libexec" "$CONFIG/apps"
+
+usage() {
+  cat <<'HELP'
+Usage: ./install.sh [--no-tools | --tools opencode,jq | --tools none]
+
+Installs the sandbox CLI, Docker build resources, and installer scripts.
+Interactively prompts for optional tools when stdin is a terminal.
+In non-interactive contexts, skips optional tools unless --tools is provided.
+HELP
+}
+CHOICE=''
+while (( $# )); do
+  case "$1" in
+    --no-tools) CHOICE=none; shift ;;
+    --tools)
+      [[ $# -ge 2 ]] || { echo '--tools needs a comma-separated selection' >&2; exit 2; }
+      CHOICE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+install -d -m 755 "$BIN" "$LIB" "$DATA" "$DATA/libexec" "$CONFIG/apps" \
+  "$DATA/tools/bin" "$DATA/tool-installers"
 install -m 755 "$ROOT/bin/sandbox" "$BIN/sandbox"
 cp -a "$ROOT/libexec/sandboxlib" "$LIB/"
 cp -a "$ROOT/images" "$DATA/"
-install -m 644 "$ROOT/.dockerignore" "$DATA/.dockerignore"
 cp -a "$ROOT/libexec/sandboxlib" "$DATA/libexec/"
-# Never overwrite existing user settings or private denylist.
+for script in "$ROOT"/tools/install-*.sh; do
+  [[ -f "$script" ]] || continue
+  install -m 755 "$script" "$DATA/tool-installers/$(basename "$script")"
+done
+if [[ -f "$ROOT/.dockerignore" ]]; then
+  install -m 644 "$ROOT/.dockerignore" "$DATA/.dockerignore"
+else
+  cat > "$DATA/.dockerignore" <<'DOCKERIGNORE'
+.git
+.gitignore
+tests/
+README.md
+*.zip
+**/__pycache__
+DOCKERIGNORE
+  chmod 644 "$DATA/.dockerignore"
+  printf 'Note: project .dockerignore missing; installed generated default.\n' >&2
+fi
+# Existing config/denylist are never overwritten during an upgrade.
 if [[ ! -e "$CONFIG/config.toml" ]]; then
   install -m 600 "$ROOT/examples/config.toml" "$CONFIG/config.toml"
 fi
@@ -21,13 +61,43 @@ fi
 if [[ ! -e "$CONFIG/apps/opencode.jsonc" ]]; then
   install -m 600 "$ROOT/examples/opencode.jsonc" "$CONFIG/apps/opencode.jsonc"
 fi
-# Launcher finds installed library at ~/.local/libexec/sandbox/sandboxlib.
-# Avoid modifying PATH, rootless Docker, or other host settings.
+
+if [[ -z "$CHOICE" && -t 0 ]]; then
+  printf '\nOptional shared tools (installed on the host, mounted RO inside sandboxes):\n'
+  printf '  1) OpenCode standalone CLI\n  2) jq\n'
+  printf 'Enter numbers separated by spaces, "all", or "none" [none]: '
+  IFS= read -r CHOICE || CHOICE=none
+fi
+CHOICE="${CHOICE:-none}"
+# Support --tools opencode,jq, '1 2', and all/none.
+CHOICE="${CHOICE//,/ }"
+case "$CHOICE" in
+  all) CHOICE='opencode jq' ;;
+  none) CHOICE='' ;;
+esac
+selected=()
+for item in $CHOICE; do
+  case "$item" in
+    1|opencode) item=opencode ;;
+    2|jq) item=jq ;;
+    *) echo "Unknown tool selection: $item (valid: opencode,jq,all,none)" >&2; exit 2 ;;
+  esac
+  if [[ ! " ${selected[*]:-} " == *" $item "* ]]; then
+    selected+=("$item")
+  fi
+done
+for tool in "${selected[@]}"; do
+  "$DATA/tool-installers/install-${tool}.sh" "$DATA/tools"
+done
+
 cat <<EOF
 Installed sandbox into:
   $BIN/sandbox
   $LIB/sandboxlib
   $DATA/images
+  $DATA/tools/bin  (mounted read-only at /opt/tools/bin)
+  $DATA/tool-installers
   $CONFIG
+Existing config and denylist were preserved.
 Ensure $BIN is in PATH.
 EOF
