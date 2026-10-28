@@ -117,11 +117,18 @@ Use explicit host-side scripts for tasks such as copying browser-authenticated O
 
 ```bash
 sandbox setup list
-sandbox setup experiment opencode-openai
-sandbox run experiment --setup opencode-openai
+# First authenticate on the host (browser-based login works there):
+~/.local/share/sandbox/tools/bin/opencode auth login anthropic
+
+# Explicit provider; no default. Credentials are piped, not copied from host files.
+SANDBOX_PROVIDER=anthropic sandbox setup experiment opencode-provider
+sandbox run experiment
+
+# A second provider or refreshed login in the same sandbox:
+SANDBOX_PROVIDER=openai sandbox setup experiment opencode-provider --force
 ```
 
-Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**, and must be reviewed before use. See [Configuration](docs/configuration.md) and [Security](docs/security.md).
+Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**, and must be reviewed before use. The OpenCode recipe selects the provider with the required `SANDBOX_PROVIDER` environment variable. Recipe completion is tracked per sandbox and recipe name; use `--force` when changing providers or refreshing tokens. **Claude Code** is a separate application, not an OpenCode provider: its login credentials cannot be transferred with `opencode auth export`. Claude Code supports pasting a browser authorization code into its terminal when a container callback is unavailable. See [Configuration](docs/configuration.md) and [Security](docs/security.md).
 
 ## Documentation
 

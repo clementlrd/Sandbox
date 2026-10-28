@@ -91,6 +91,8 @@ confirm_host_execution = true
 
 Recipes are executable trusted host scripts. Use `sandbox setup NAME RECIPE` or `sandbox run NAME --setup RECIPE`. Completion is tracked per sandbox/recipe, not per runtime; reapply with `--force`. Recipes can access your host credentials, so review them before execution.
 
+The bundled `opencode-provider` recipe requires an explicit `SANDBOX_PROVIDER` environment variable (for example, `SANDBOX_PROVIDER=anthropic sandbox setup agent opencode-provider`). There is no default. Use `--force` to import another provider into the same sandbox, because completion tracking is keyed by the recipe name, not its environment variables. Provider IDs refer to OpenCode integrations, **not** applications: `anthropic` selects Claude models *inside OpenCode*; it does not export credentials from the separate Claude Code CLI.
+
 ## Persistence at a glance
 
 | Container location | Host backing | Scope |

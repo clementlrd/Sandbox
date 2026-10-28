@@ -32,11 +32,11 @@ class SetupTests(unittest.TestCase):
     def test_parser_supports_listing_setup_and_run_shortcut(self):
         p = cli.parser()
         self.assertEqual(p.parse_args(['setup', 'list']).name, 'list')
-        self.assertEqual(p.parse_args(['setup', 'agent', 'opencode-openai',
+        self.assertEqual(p.parse_args(['setup', 'agent', 'opencode-provider',
                                       '--runtime', 'python-xpu']).runtime, 'python-xpu')
         args = p.parse_args(['run', 'agent', '--runtime', 'python-xpu',
-                             '--setup', 'opencode-openai', '--yes'])
-        self.assertEqual(args.setup, ['opencode-openai'])
+                             '--setup', 'opencode-provider', '--yes'])
+        self.assertEqual(args.setup, ['opencode-provider'])
         self.assertTrue(args.yes)
 
     def test_config_setup_section(self):
@@ -104,7 +104,7 @@ class SetupTests(unittest.TestCase):
                    XDG_DATA_HOME=str(home / '.local/share'))
         subprocess.run(['bash', str(project / 'install.sh'), '--no-tools'],
                        check=True, capture_output=True, env=env)
-        recipe = home / '.config/sandbox/recipes/opencode-openai.sh'
+        recipe = home / '.config/sandbox/recipes/opencode-provider.sh'
         self.assertTrue(recipe.is_file())
         self.assertTrue(os.access(recipe, os.X_OK))
         recipe.write_text('customized\n')
@@ -132,15 +132,15 @@ class SetupTests(unittest.TestCase):
         apply.assert_called_once_with('agent', 'example', cfg, force=False, yes=True, runtime='python-xpu')
         runner.assert_called_once_with(['echo', 'inside'], check=True)
 
-    def test_builtin_opencode_recipe_pipes_auth_and_removes_tempfile(self):
+    def test_builtin_opencode_recipe_pipes_selected_provider_and_removes_tempfile(self):
         project = Path(__file__).resolve().parents[1]
         bin_dir = self.root / 'tools/bin'
         bin_dir.mkdir(parents=True)
-        exported = b'{"provider":"openai","secret":"a-private-test-value"}\n'
         opencode = bin_dir / 'opencode'
         opencode.write_text('''#!/bin/sh
-if [ "$1 $2 $3" = "auth export openai" ]; then
-  printf '%s\n' '{"provider":"openai","secret":"a-private-test-value"}'
+if [ "$1 $2" = "auth export" ]; then
+  [ "$3" = "$EXPECTED_PROVIDER" ] || exit 4
+  printf '%s\n' '{"secret":"a-private-test-value"}'
 elif [ "$1 $2" = "auth import" ]; then
   cp "$3" "$CAPTURED_BYTES"
   printf '%s\n' "$3" > "$TEMP_PATH"
@@ -171,12 +171,30 @@ exec "$@"
                    SANDBOX_CLI=str(receiver), SANDBOX_TOOLS_DIR=str(self.root / 'tools'),
                    SANDBOX_RUNTIME='python-xpu', CAPTURED_BYTES=str(dest),
                    TEMP_PATH=str(temp_path))
-        proc = subprocess.run(['bash', str(project / 'recipes/opencode-openai.sh'), 'agent'],
+        script = project / 'recipes/opencode-provider.sh'
+        for provider in ('openai', 'anthropic'):
+            with self.subTest(provider=provider):
+                env['SANDBOX_PROVIDER'] = provider
+                env['EXPECTED_PROVIDER'] = provider
+                proc = subprocess.run(['bash', str(script), 'agent'],
+                                      capture_output=True, env=env)
+                self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+                self.assertEqual(dest.read_bytes(), b'{"secret":"a-private-test-value"}\n')
+                self.assertFalse(Path(temp_path.read_text().strip()).exists())
+                self.assertNotIn(b'a-private-test-value', proc.stdout + proc.stderr)
+
+        env.pop('SANDBOX_PROVIDER', None)
+        proc = subprocess.run(['bash', str(script), 'agent'],
                               capture_output=True, env=env)
-        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
-        self.assertEqual(dest.read_bytes(), exported)
-        self.assertFalse(Path(temp_path.read_text().strip()).exists())
-        self.assertNotIn(b'a-private-test-value', proc.stdout + proc.stderr)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(b'SANDBOX_PROVIDER', proc.stderr)
+        self.assertFalse(dest.read_bytes() == b'')
+
+        env['SANDBOX_PROVIDER'] = 'anthropic;echo pwned'
+        proc = subprocess.run(['bash', str(script), 'agent'],
+                              capture_output=True, env=env)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(b'Invalid SANDBOX_PROVIDER', proc.stderr)
 
 
 
