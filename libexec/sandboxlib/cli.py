@@ -13,7 +13,7 @@ import uuid
 from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
-from .settings import read_only_mounts, load
+from .settings import IMAGES, read_only_mounts, load
 
 
 def call(args, *, capture=False, env=None):
@@ -173,10 +173,35 @@ def image_profile(runtime):
     return runtime
 
 
+def runtime_definition(runtime, cfg):
+    profiles = cfg.get('runtimes')
+    if profiles is not None:
+        if runtime not in profiles:
+            raise ValueError(f'unknown runtime {runtime!r}; see sandbox runtimes')
+        return profiles[runtime]
+    # Older test fixtures and external callers use the legacy config shape.
+    if runtime not in ('base', 'python-xpu'):
+        raise ValueError(f'unknown runtime {runtime!r}')
+    return {
+        'image': cfg.get('images', IMAGES)[runtime], 'shell': '/bin/bash',
+        'devices': cfg.get('gpu_devices', []) if runtime == 'python-xpu' else [],
+        'venv_volume': cfg.get('venv_volume', True),
+        'dockerfile': None, 'context': None,
+    }
+
+
+def command_runtimes(args, cfg):
+    profiles = cfg.get('runtimes', {})
+    for name, entry in sorted(profiles.items()):
+        buildable = ('built-in' if name in ('base', 'python-xpu') and not entry['dockerfile']
+                     else 'configured' if entry['dockerfile'] else 'external')
+        print(f'{name:<20} {entry["image"]:<40} {buildable}')
+
+
 def pinned_image(meta, path, profile, cfg):
     pins = meta['runtime_images']
     if profile not in pins:
-        pins[profile] = inspect_image(cfg['images'][profile])
+        pins[profile] = inspect_image(runtime_definition(profile, cfg)['image'])
         save_instance(path, meta)
     return pins[profile]
 
@@ -200,7 +225,8 @@ def runtime_args(path, meta, cfg, runtime, command):
     The image's original PATH is preserved by prepending /opt/tools/bin *inside*
     the container. In particular, the Intel XPU image needs /opt/venv/bin.
     """
-    profile = image_profile(runtime)
+    profile = runtime
+    definition = runtime_definition(profile, cfg)
     image = pinned_image(meta, path, profile, cfg)
     mounts = read_only_mounts(cfg)
     if meta['anonymized']:
@@ -225,7 +251,7 @@ def runtime_args(path, meta, cfg, runtime, command):
             '--env', 'GIT_COMMITTER_NAME=Sandbox', '--env', 'GIT_COMMITTER_EMAIL=sandbox@invalid']
     if sys.stdin.isatty() and sys.stdout.isatty():
         args.append('--tty')
-    if cfg['venv_volume']:
+    if definition['venv_volume']:
         venv_name = volume_name(meta, 'venvs-' + image.split(':', 1)[1][:12])
         remember_volume(meta, path, venv_name)
         args += ['--mount', f'type=volume,src={venv_name},dst=/opt/venvs']
@@ -242,12 +268,11 @@ def runtime_args(path, meta, cfg, runtime, command):
     legacy_state = volume_name(meta, 'opencode')
     if legacy_state in meta.get('volumes', []):
         args += ['--mount', f'type=volume,src={legacy_state},dst=/root/.local/share/opencode']
-    if profile == 'python-xpu':
-        for device in cfg['gpu_devices']:
-            if not Path(device).is_char_device():
-                raise ValueError('GPU render device is missing: ' + device)
-            args += ['--device', device + ':' + device + ':rw',
-                     '--group-add', str(Path(device).stat().st_gid)]
+    for device in definition['devices']:
+        if not Path(device).is_char_device():
+            raise ValueError('runtime device is missing or not a character device: ' + device)
+        args += ['--device', device + ':' + device + ':rw',
+                 '--group-add', str(Path(device).stat().st_gid)]
     for source, dest in mounts:
         args += ['--mount', mount_spec(source, dest, True)]
     for key in cfg['forward_env']:
@@ -347,7 +372,8 @@ def command_run(args, cfg):
     # Reload after host-side recipes complete; they may update sandbox metadata.
     path, meta = load_instance(args.name)
     try:
-        subprocess.run(runtime_args(path, meta, cfg, args.runtime, ['/bin/bash']), check=True)
+        shell = runtime_definition(args.runtime, cfg)['shell']
+        subprocess.run(runtime_args(path, meta, cfg, args.runtime, [shell]), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -390,17 +416,36 @@ def command_destroy(args, cfg):
     print(f'Destroyed {args.name}')
 
 
+def resolve_build_path(spec):
+    path = Path(spec).expanduser()
+    if not path.is_absolute():
+        path = config_dir() / path
+    return path.resolve(strict=True)
+
+
 def command_build(args, cfg):
     docker_rootless()
     image = args.image
-    if image not in cfg['images']:
-        raise ValueError('unknown build target')
-    context = resource_dir()
-    dockerfile = context / 'images' / image / 'Dockerfile'
-    if not dockerfile.is_file():
-        raise ValueError(f'missing build resources at {context}; run install.sh')
-    cmd = ['docker', 'build', '--progress=plain', '-f', str(dockerfile),
-           '-t', cfg['images'][image]]
+    if image == 'preparer':
+        tag = cfg['images']['preparer']
+        context = resource_dir()
+        dockerfile = context / 'images/preparer/Dockerfile'
+    else:
+        definition = runtime_definition(image, cfg)
+        tag = definition['image']
+        if definition['dockerfile']:
+            dockerfile = resolve_build_path(definition['dockerfile'])
+            context = (resolve_build_path(definition['context']) if definition['context']
+                       else dockerfile.parent)
+        elif image in ('base', 'python-xpu'):
+            context = resource_dir()
+            dockerfile = context / 'images' / image / 'Dockerfile'
+        else:
+            raise ValueError(f'runtime {image!r} has no Dockerfile; build its image externally '
+                             'or set runtimes.' + image + '.dockerfile')
+    if not dockerfile.is_file() or not context.is_dir():
+        raise ValueError(f'missing Dockerfile/build context for {image!r}: {dockerfile} {context}')
+    cmd = ['docker', 'build', '--progress=plain', '-f', str(dockerfile), '-t', tag]
     if args.no_cache:
         cmd.append('--no-cache')
     if args.pull:
@@ -422,12 +467,14 @@ def parser():
     create.set_defaults(handler=command_create)
     listing = sub.add_parser('list', help='list named sandboxes')
     listing.set_defaults(handler=command_list)
+    profiles = sub.add_parser('runtimes', help='list configured runtime profiles')
+    profiles.set_defaults(handler=command_runtimes)
     info = sub.add_parser('inspect', help='show session metadata')
     info.add_argument('name')
     info.set_defaults(handler=command_inspect)
     run = sub.add_parser('run', help='launch an interactive shell in a sandbox')
     run.add_argument('name')
-    run.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')
+    run.add_argument('--runtime', default='base')
     run.add_argument('--setup', action='append', default=[], metavar='RECIPE',
                      help='apply trusted host setup recipe before starting')
     run.add_argument('--force-setup', action='store_true', help='reapply an already completed recipe')
@@ -437,12 +484,12 @@ def parser():
     setup.add_argument('name', help='sandbox name, or list')
     setup.add_argument('recipe', nargs='?', help='recipe name')
     setup.add_argument('--force', action='store_true', help='reapply a completed recipe')
-    setup.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')
+    setup.add_argument('--runtime', default='base')
     setup.add_argument('--yes', action='store_true', help='confirm host script execution')
     setup.set_defaults(handler=command_setup)
     exe = sub.add_parser('exec', help='execute a command in an ephemeral container')
     exe.add_argument('name')
-    exe.add_argument('--runtime', choices=['base', 'python-xpu'], default='base')
+    exe.add_argument('--runtime', default='base')
     exe.set_defaults(handler=command_exec)
     imp = sub.add_parser('import', help='make host review branches from sandbox commits')
     imp.add_argument('name')
@@ -453,7 +500,7 @@ def parser():
     destroy.add_argument('--yes', action='store_true')
     destroy.set_defaults(handler=command_destroy)
     build = sub.add_parser('build', help='explicitly build one cached image')
-    build.add_argument('image', choices=['preparer', 'base', 'python-xpu'])
+    build.add_argument('image', help='preparer or a configured runtime name')
     build.add_argument('--no-cache', action='store_true')
     build.add_argument('--pull', action='store_true')
     build.set_defaults(handler=command_build)

@@ -352,8 +352,7 @@ optional = true
         command = c.call_args.args[0]
         self.assertEqual(command.count('build'), 1)
         self.assertNotIn('BASE_IMAGE=', ' '.join(command))
-        with self.assertRaises(SystemExit):
-            cli.parser().parse_args(['build', 'opencode'])
+        self.assertEqual(cli.parser().parse_args(['build', 'custom']).image, 'custom')
 
     def test_tools_install_noninteractive_and_preserve_config(self):
         # Run the actual installer without requesting network downloads.

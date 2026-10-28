@@ -1,0 +1,25 @@
+name: Tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Syntax checks
+        run: |
+          python -m compileall -q libexec/sandboxlib
+          bash -n install.sh tools/install-*.sh recipes/*.sh
+      - name: Unit and Git tests
+        run: python -m unittest discover -s tests -v
+      # This is NOT a rootless Docker or GPU integration test.

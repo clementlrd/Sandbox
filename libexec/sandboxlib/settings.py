@@ -20,6 +20,8 @@ SETUP_DEFAULT = {
 }
 # Legacy config keys are accepted so upgrading does not discard users' skills.
 LEGACY = {'mount_global_skills', 'opencode_config'}
+RUNTIME_FIELDS = {'image', 'shell', 'devices', 'venv_volume', 'dockerfile', 'context'}
+RUNTIME_NAME = re.compile(r'[a-z][a-z0-9-]{0,39}\Z')
 IMAGES = {
     'preparer': 'sandbox/preparer:v1',
     'base': 'sandbox/base:v1',
@@ -33,16 +35,20 @@ def load():
     images = IMAGES.copy()
     extra_mounts = []
     setup = SETUP_DEFAULT.copy()
+    runtime_settings = {}
     if path.is_file():
         with path.open('rb') as f:
             raw = tomllib.load(f)
-        unknown = set(raw) - {'sandbox', 'images', 'mounts', 'setup'}
+        unknown = set(raw) - {'sandbox', 'images', 'mounts', 'setup', 'runtimes'}
         if unknown:
             raise ValueError(f'unknown config sections: {sorted(unknown)}')
         sc = raw.get('sandbox', {})
         im = raw.get('images', {})
         extra_mounts = raw.get('mounts', [])
         setup_raw = raw.get('setup', {})
+        runtime_settings = raw.get('runtimes', {})
+        if not isinstance(runtime_settings, dict):
+            raise ValueError('runtimes must be TOML tables ([runtimes.NAME])')
         if not isinstance(setup_raw, dict) or set(setup_raw) - set(SETUP_DEFAULT):
             raise ValueError('unknown setup configuration key')
         setup.update(setup_raw)
@@ -86,6 +92,53 @@ def load():
     for k, v in images.items():
         if not isinstance(v, str) or not v.strip() or '\n' in v:
             raise ValueError(f'invalid image tag: {k}')
+    # Keep the original [images] tags for existing installations. Runtime
+    # definitions are optional overrides or entirely new named profiles.
+    runtimes = {}
+    for name in ('base', 'python-xpu'):
+        runtimes[name] = {
+            'image': images[name], 'shell': '/bin/bash',
+            'devices': list(obj['gpu_devices']) if name == 'python-xpu' else [],
+            'venv_volume': obj['venv_volume'],
+            'dockerfile': None, 'context': None,
+        }
+    for name, entry in runtime_settings.items():
+        if not isinstance(name, str) or not RUNTIME_NAME.fullmatch(name) or name == 'preparer':
+            raise ValueError(f'invalid runtime name: {name!r}')
+        if not isinstance(entry, dict) or set(entry) - RUNTIME_FIELDS:
+            raise ValueError(f'invalid fields in runtime {name!r}')
+        if name not in runtimes and 'image' not in entry:
+            raise ValueError(f'runtime {name!r} needs an image')
+        base = runtimes.get(name, {
+            'image': None, 'shell': '/bin/bash', 'devices': [],
+            'venv_volume': False, 'dockerfile': None, 'context': None,
+        }).copy()
+        base.update(entry)
+        runtimes[name] = base
+    for name, rt in runtimes.items():
+        if not isinstance(rt['image'], str) or not rt['image'].strip() or '\n' in rt['image']:
+            raise ValueError(f'invalid image for runtime {name!r}')
+        shell = rt['shell']
+        shell_path = PurePosixPath(shell) if isinstance(shell, str) else None
+        if (shell_path is None or not shell_path.is_absolute() or '..' in shell_path.parts or
+                str(shell_path) == '/'):
+            raise ValueError(f'invalid shell for runtime {name!r}')
+        if type(rt['venv_volume']) is not bool:
+            raise ValueError(f'invalid venv_volume for runtime {name!r}')
+        devices = rt['devices']
+        if (not isinstance(devices, list) or len(devices) > 16 or
+                any(not isinstance(dev, str) or not dev.startswith('/dev/') or
+                    '..' in PurePosixPath(dev).parts or '\n' in dev for dev in devices) or
+                len(set(devices)) != len(devices)):
+            raise ValueError(f'invalid device paths for runtime {name!r}')
+        for option in ('dockerfile', 'context'):
+            if rt[option] is not None and (not isinstance(rt[option], str) or
+                not rt[option].strip() or '\n' in rt[option]):
+                raise ValueError(f'invalid {option} for runtime {name!r}')
+        if rt['context'] and not rt['dockerfile']:
+            raise ValueError(f'runtime {name!r} needs dockerfile when context is set')
+    obj['runtimes'] = runtimes
+
     if not isinstance(setup['recipes_dir'], str) or not setup['recipes_dir'].strip():
         raise ValueError('setup.recipes_dir must be a nonempty path')
     if type(setup['confirm_host_execution']) is not bool:

@@ -3,15 +3,30 @@
 memory = "8g"
 pids_limit = 512
 network = "bridge"               # "bridge" (Internet) or "none"
-gpu_devices = []                 # e.g. ["/dev/dri/renderD128"]
+gpu_devices = []                 # legacy: only used by python-xpu when not overridden
 forward_env = []                 # e.g. ["ANTHROPIC_API_KEY"] (readable in sandbox)
-venv_volume = true              # per-sandbox, per-runtime-image Python venvs
+venv_volume = true              # default for built-in base/python-xpu runtimes
 shared_tools = true             # $XDG_DATA_HOME/sandbox/tools -> /opt/tools, read-only
 
 [images]
 preparer = "sandbox/preparer:v1"
 base = "sandbox/base:v1"
 python-xpu = "sandbox/python-xpu:v1"
+
+# Optional runtime profiles. Any name can be added here; "base" and "python-xpu"
+# remain available without explicit definitions. A runtime can point to an
+# existing image, or provide a Dockerfile + context for `sandbox build NAME`.
+#
+# [runtimes.node]
+# image = "my-sandbox/node:22"
+# shell = "/bin/bash"
+# venv_volume = false
+# dockerfile = "~/.config/sandbox/runtimes/node/Dockerfile"
+# context = "~/.config/sandbox/runtimes/node"
+# devices = []                  # explicit device passthrough, if required
+#
+# [runtimes.python-xpu]
+# devices = ["/dev/dri/renderD128"]
 
 # Generic optional mounts for application configuration/skills. Available in ALL
 # runtime sessions; no app-profile handling in the sandbox CLI.
