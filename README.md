@@ -54,7 +54,7 @@ Enter `1 2`, `all`, `1`, `2`, or `none`. In non-interactive installs it skips to
 ./install.sh --no-tools          # install CLI/resources without downloads
 ```
 
-The project contains small standalone scripts at `tools/install-opencode.sh` and `tools/install-jq.sh`; they are also copied into `~/.local/share/sandbox/tool-installers/` for later manual use:
+The project always installs **`tools/sandbox-py`** into the shared tools directory (no download required). The optional download scripts are `tools/install-opencode.sh` and `tools/install-jq.sh`; they are also copied into `~/.local/share/sandbox/tool-installers/` for later manual use:
 
 ```bash
 ~/.local/share/sandbox/tool-installers/install-opencode.sh
@@ -73,7 +73,7 @@ Installed layout (XDG paths honored where applicable):
 ~/.local/libexec/sandbox/sandboxlib/     # Python helpers
 ~/.local/share/sandbox/images/          # Docker build resources
 ~/.local/share/sandbox/tool-installers/  # Host-side download scripts
-~/.local/share/sandbox/tools/bin/        # Shared executable files
+~/.local/share/sandbox/tools/bin/        # sandbox-py (always), plus optional tools
 ~/.config/sandbox/config.toml            # User configuration
 ~/.config/sandbox/denylist.txt           # Sensitive identifiers (600)
 ~/.config/sandbox/apps/opencode.jsonc    # Optional OpenCode config
@@ -109,6 +109,7 @@ The host directory `${XDG_DATA_HOME:-~/.local/share}/sandbox/tools` is mounted *
 Host                                              Container
 ~/.local/share/sandbox/tools/bin/opencode     ->  /opt/tools/bin/opencode (RO)
 ~/.local/share/sandbox/tools/bin/jq           ->  /opt/tools/bin/jq (RO)
+~/.local/share/sandbox/tools/bin/sandbox-py   ->  /opt/tools/bin/sandbox-py (RO)
 ```
 
 Applications launched inside a sandbox cannot modify the shared tools mount. Tool installers run on the host. There is no `sandbox tool`, `--app`, or `--tool-version` interface. The tools must be compatible with the runtime's architecture and libraries; the supplied binaries target Linux x86-64 and Ubuntu's glibc. Tools that need additional libraries may require a runtime image change.
@@ -205,21 +206,33 @@ my-personal-username
 private.example.com
 ```
 
-Before launch, the trusted preparer scans Git objects (including unreachable objects), current workspace files and paths, symlink targets, Git metadata, and all configured read-only mounts—including shared tools. The denylist never enters the runtime container. Matches block the session. **This is a best-effort privacy check**, not a guarantee: compressed or encoded text, unexpected identifiers, and sensitive contents in writable app volumes might not be caught. Large tool binaries can make anonymized preflights slower; this is the cost of including every mounted read-only path in the scan.
+Before launch, the trusted preparer scans Git objects (including unreachable objects), current workspace files and paths, symlink targets, Git metadata, and configured read-only skill/config mounts. **The built-in shared tools mount is excluded from binary-content scanning**, since host-installed executables may trigger spurious denylist matches. The denylist never enters the runtime container. Matches block the session. **This is a best-effort privacy check**, not a guarantee: compressed or encoded text, unexpected identifiers, and sensitive contents in writable app volumes might not be caught.
 
 ### Intel XPU Python environments
 
-The Intel upstream base image places PyTorch under `/opt/venv`, *not* the system Python. To make a persistent environment that reuses that preinstalled PyTorch:
+The Intel upstream image places GPU-enabled PyTorch under `/opt/venv`. The included `sandbox-py` helper creates environments under the persistent `/opt/venvs` Docker volume and makes those base Python packages available without copying them. It uses **pip**, not uv, for dependency resolution. Your `uv.lock` is not used or modified.
+
+**Typical setup for a uv-created repository:**
 
 ```bash
-sandbox run dev --runtime python-xpu
-sandbox-venv experiment1
-source /opt/venvs/experiment1/bin/activate
-python -c 'import torch; print(torch.xpu.is_available())'
-python -m pip install transformers
+sandbox run agent --runtime python-xpu
+# Inside the container, in /workspace:
+sandbox-py init project             # installs pyproject.toml dependencies
+sandbox-py init project --group dev  # include optional PEP 735 dev group
+sandbox-py install project transformers datasets
+sandbox-py check project
+/opt/venvs/project/bin/python train.py
 ```
 
-`sandbox-venv` arranges a `.pth` reference to Intel's shared packages; plain `python -m venv --system-site-packages` does not automatically inherit `/opt/venv` packages. GPU access needs the host render-device permissions to work with rootless Docker. The venv volume is bound to the pinned runtime image ID to reduce breakage after Python upgrades.
+For a project with an editable-installable build backend, `init` runs `pip install -e /workspace` with a PyTorch constraint. For **uv-style projects without `[build-system]`**, it reads `[project].dependencies` and, if requested, `[project.optional-dependencies]` / `[dependency-groups]` from `pyproject.toml` and passes the requirements to pip. **Pip still resolves the full transitive dependency graph**. Use `--extra visualization` and/or `--group dev` to include non-default dependencies. PEP 735 `include-group` entries are supported. This approach doesn't apply `uv.lock` or uv-specific `[tool.uv.sources]`, and a project lacking a build backend isn't installed as an editable package; your code still runs from `/workspace`.
+
+The helper generates `/opt/venvs/project/torch-constraints.txt` from the version of PyTorch baked into the XPU runtime. Every `sandbox-py init` / `sandbox-py install` operation supplies that constraint. Pip normally **reuses installed compatible packages** and installs missing ones into the child environment. If the project requests an incompatible PyTorch version, the resolution **fails rather than replacing the inherited GPU build**. Other installed packages may be shadowed when their versions conflict; only PyTorch is pinned. It also checks that PyTorch has not been shadowed by a project-local install.
+
+`/opt/venvs/project` survives closing the ephemeral container, but **`sandbox destroy` deletes its volume**. You can always use `/opt/venvs/project/bin/python` without activating the environment. For interactive use, `source /opt/venvs/project/bin/activate` works too. Re-run `sandbox-py init project` after changing dependencies, or install additional packages with `sandbox-py install project PACKAGE...`.
+
+`tools/sandbox-py` is always installed by `./install.sh --no-tools`, independently of OpenCode and jq; **no Docker rebuild is needed**. The XPU image's existing `sandbox-venv` remains available as a low-level helper.
+
+**Protection scope:** `sandbox-py` avoids accidentally changing/overriding image PyTorch through its own pip commands. It is **not** a security boundary: an agent may invoke pip or uv directly, overwrite files in its writable venv, or install a local conflicting dependency. The image's original PyTorch is still restored on a fresh `docker run --rm` container. If a child venv is damaged, delete/recreate that child environment. The interpreter and its shared packages are tied to the pinned runtime image ID; don't copy venvs between different base-image versions.
 
 ## 7. Limitations and troubleshooting
 
@@ -237,6 +250,7 @@ Run local tests with:
 ```bash
 python -m unittest discover -s tests -v
 bash -n install.sh tools/*.sh
+python -m py_compile tools/sandbox-py
 ```
 
 If your pre-upgrade configuration still includes `opencode` or `opencode-xpu` image tags, they are safely ignored; build only `preparer`, `base`, and `python-xpu` from now on. If a reinstalled `sandbox` command still asks for `--app`, verify `~/.local/bin` is first in `$PATH`.
@@ -252,6 +266,7 @@ libexec/sandboxlib/importer.py    # commit map / host review branch import
 images/{preparer,base,python-xpu}/ # minimal runtime image family
 tools/install-opencode.sh         # official standalone OpenCode archive
 tools/install-jq.sh               # pinned & checksum-verified jq
+tools/sandbox-py                   # persistent Python venvs + pip constraints
 examples/config.toml             # generic mount configuration
 install.sh                        # optional interactive tool selection
 ```

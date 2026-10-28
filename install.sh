@@ -30,6 +30,8 @@ done
 install -d -m 755 "$BIN" "$LIB" "$DATA" "$DATA/libexec" "$CONFIG/apps" \
   "$DATA/tools/bin" "$DATA/tool-installers"
 install -m 755 "$ROOT/bin/sandbox" "$BIN/sandbox"
+# Always install the generic Python environment manager into the shared tools mount.
+install -m 755 "$ROOT/tools/sandbox-py" "$DATA/tools/bin/sandbox-py"
 cp -a "$ROOT/libexec/sandboxlib" "$LIB/"
 cp -a "$ROOT/images" "$DATA/"
 cp -a "$ROOT/libexec/sandboxlib" "$DATA/libexec/"
@@ -95,7 +97,7 @@ Installed sandbox into:
   $BIN/sandbox
   $LIB/sandboxlib
   $DATA/images
-  $DATA/tools/bin  (mounted read-only at /opt/tools/bin)
+  $DATA/tools/bin  (sandbox-py always installed; mounted read-only at /opt/tools/bin)
   $DATA/tool-installers
   $CONFIG
 Existing config and denylist were preserved.

@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""Manage persistent per-sandbox Python venvs without replacing base XPU torch.
+
+Runs *inside* a sandbox, where /opt/venvs is a Docker volume. No uv or
+custom dependency solver: pip resolves requirements from pyproject.toml.
+"""
+from __future__ import annotations
+
+import argparse
+from importlib import metadata
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+
+VENV_ROOT = Path('/opt/venvs')
+STATE_NAME = '.sandbox-python.json'
+CONSTRAINT_NAME = 'torch-constraints.txt'
+NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+BASE_PYTHON = Path('/opt/venv/bin/python')
+
+
+def error(message):
+    raise ValueError(message)
+
+
+def venv_path(name):
+    if not NAME_RE.fullmatch(name) or name in ('.', '..'):
+        error('environment name must be simple (letters, numbers, _, - and .)')
+    path = VENV_ROOT / name
+    if path.is_symlink():
+        error('virtual environment must not be a symlink')
+    return path
+
+
+def run(argv, **kwargs):
+    subprocess.run([str(a) for a in argv], check=True, **kwargs)
+
+
+def py_info(python):
+    """Get base torch metadata without importing the GPU runtime itself."""
+    source = '''import json, sys, sysconfig
+from importlib import metadata
+try:
+    dist = metadata.distribution('torch')
+except metadata.PackageNotFoundError:
+    dist = None
+print(json.dumps({'python': sys.version.split()[0],
+  'torch': dist.version if dist else None,
+  'torch_location': str(dist.locate_file('torch')) if dist else None,
+  'site': sysconfig.get_paths()['purelib']}))'''
+    p = subprocess.run([str(python), '-c', source], text=True, capture_output=True, check=True)
+    return json.loads(p.stdout)
+
+
+def torch_pin(base_info, environment_info, base_dir):
+    """Assert torch resolves to the image's base installation, not an override."""
+    version = base_info.get('torch')
+    if not version:
+        return None
+    if environment_info.get('torch') != version:
+        error('environment does not see base PyTorch ' + version)
+    base_loc = Path(base_info['torch_location']).resolve()
+    seen_loc = Path(environment_info['torch_location']).resolve()
+    base_site = Path(base_info['site']).resolve()
+    if not base_loc.is_relative_to(base_site) or seen_loc != base_loc:
+        error('PyTorch is shadowed in the project venv; refusing to proceed')
+    if not base_site.is_relative_to(base_dir.resolve()):
+        error('PyTorch does not belong to the expected base image environment')
+    return version
+
+
+def state_for(path):
+    file = path / STATE_NAME
+    if not file.is_file():
+        error(f'{path} is not managed by sandbox-py; initialize with sandbox-py init NAME')
+    data = json.loads(file.read_text(encoding='utf-8'))
+    if data.get('version') != 1:
+        error('unrecognized environment metadata version')
+    return data
+
+
+def write_state(path, data):
+    tmp = path / (STATE_NAME + '.tmp')
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    os.replace(tmp, path / STATE_NAME)
+
+
+def check_base(path, data):
+    pin = data.get('base_torch')
+    if not pin:
+        return
+    base = Path(data['base_python'])
+    if not base.is_file():
+        error('base Python is missing: ' + str(base))
+    base_info = py_info(base)
+    child_info = py_info(path / 'bin/python')
+    detected = torch_pin(base_info, child_info, base.parent.parent)
+    if detected != pin:
+        error(f'base PyTorch changed: expected {pin}, now {detected}; recreate the venv')
+
+
+def ensure_env(path, project):
+    if path.exists():
+        data = state_for(path)
+        if Path(data['project']).resolve() != project:
+            error(f'{path} belongs to {data["project"]}; use another name')
+        check_base(path, data)
+        return data
+    if not VENV_ROOT.is_dir():
+        error('/opt/venvs is not mounted; enable venv_volume in sandbox config')
+    base_info = None
+    if BASE_PYTHON.is_file():
+        base_info = py_info(BASE_PYTHON)
+    if base_info and base_info.get('torch'):
+        creator = shutil.which('sandbox-venv')
+        if not creator:
+            error('XPU base detected but sandbox-venv is unavailable')
+        run([creator, path.name])
+        base = BASE_PYTHON
+    else:
+        base = Path(sys.executable).resolve()
+        run([str(base), '-m', 'venv', str(path)])
+    child = path / 'bin/python'
+    if not child.is_file():
+        error('virtual environment was not created')
+    data = {'version': 1, 'project': str(project), 'base_python': str(base),
+            'base_torch': None, 'python_version': py_info(child)['python']}
+    if base_info and base_info.get('torch'):
+        data['base_torch'] = torch_pin(base_info, py_info(child), base.parent.parent)
+        (path / CONSTRAINT_NAME).write_text(f'torch=={data["base_torch"]}\n', encoding='utf-8')
+    write_state(path, data)
+    return data
+
+
+def constraint_flags(path, data):
+    if data.get('base_torch'):
+        constraint = path / CONSTRAINT_NAME
+        if constraint.read_text(encoding='utf-8').strip() != f'torch=={data["base_torch"]}':
+            error('PyTorch constraints file has changed unexpectedly')
+        return ['-c', str(constraint)]
+    return []
+
+
+def get_project_requirements(project, extras, groups):
+    """Read only top-level requirements; leave resolution to pip."""
+    source = project / 'pyproject.toml'
+    if not source.is_file():
+        error(f'no pyproject.toml in {project}')
+    conf = tomllib.loads(source.read_text(encoding='utf-8'))
+    p = conf.get('project', {})
+    if 'dependencies' in p.get('dynamic', []):
+        if not conf.get('build-system'):
+            error('dynamic dependencies require a build backend')
+    requirements = list(p.get('dependencies', []))
+    if any(not isinstance(req, str) for req in requirements):
+        error('[project].dependencies must be a list of PEP 508 strings')
+    for extra in extras:
+        optional = p.get('optional-dependencies', {})
+        if extra not in optional:
+            error(f'unknown optional extra: {extra}')
+        requirements.extend(optional[extra])
+    available_groups = conf.get('dependency-groups', {})
+    visited = set()
+
+    def expand(group, stack):
+        if group not in available_groups:
+            error('unknown dependency group: ' + group)
+        if group in stack:
+            error('circular dependency group inclusion: ' + group)
+        for item in available_groups[group]:
+            if isinstance(item, str):
+                requirements.append(item)
+            elif isinstance(item, dict) and set(item) == {'include-group'}:
+                expand(item['include-group'], stack | {group})
+            else:
+                error(f'unsupported entry in dependency group {group}: {item}')
+
+    for group in groups:
+        expand(group, set())
+    return conf, requirements
+
+
+def command_init(args):
+    path = venv_path(args.name)
+    project = Path(args.project).expanduser().resolve(strict=True)
+    conf, reqs = get_project_requirements(project, args.extra, args.group)
+    data = ensure_env(path, project)
+    check_base(path, data)
+    python = path / 'bin/python'
+    flags = constraint_flags(path, data)
+    # Install the package itself when a build backend is declared. Many uv-only
+    # applications have pyproject.toml but no build-system: install their PEP 621
+    # requirements directly, letting pip do ALL dependency resolution.
+    has_backend = 'build-system' in conf or any((project / n).exists() for n in ('setup.py', 'setup.cfg'))
+    targets = []
+    if has_backend:
+        target = str(project)
+        if args.extra:
+            target += '[' + ','.join(args.extra) + ']'
+        targets += ['-e', target]
+        # Extra requirements are included by pip from the project metadata.
+        group_reqs = get_project_requirements(project, [], args.group)[1]
+        direct_reqs = get_project_requirements(project, [], [])[1]
+        # Preserve group requirements including group includes; base deps appear
+        # naturally in the editable install, so only add group-derived entries.
+        targets.extend(group_reqs[len(direct_reqs):])
+    else:
+        targets.extend(reqs)
+        print('No build backend declared: installing declared dependencies, not the project itself.')
+    if targets:
+        run([python, '-m', 'pip', 'install', '--upgrade-strategy', 'only-if-needed',
+             *flags, *targets], cwd=project)
+    else:
+        print('No dependencies to install.')
+    check_base(path, data)
+    print(f'Environment: {path}\nUse: {path}/bin/python')
+
+
+def command_install(args):
+    path = venv_path(args.name)
+    data = state_for(path)
+    check_base(path, data)
+    for value in args.packages:
+        if value.startswith('-'):
+            error('pass package requirements, not pip options')
+    run([path / 'bin/python', '-m', 'pip', 'install', '--upgrade-strategy',
+         'only-if-needed', *constraint_flags(path, data), *args.packages])
+    check_base(path, data)
+
+
+def command_check(args):
+    path = venv_path(args.name)
+    data = state_for(path)
+    check_base(path, data)
+    run([path / 'bin/python', '-m', 'pip', 'check'])
+    print(f'OK: {path}' + (f' reuses PyTorch {data["base_torch"]}' if data.get('base_torch') else ''))
+
+
+def parser():
+    p = argparse.ArgumentParser(prog='sandbox-py', description='Persistent Python environments (pip, shared XPU torch)')
+    sub = p.add_subparsers(dest='command', required=True)
+    init = sub.add_parser('init', help='create/reuse an environment and install a project')
+    init.add_argument('name')
+    init.add_argument('--project', default='.', help='path to project containing pyproject.toml')
+    init.add_argument('--extra', action='append', default=[], help='optional project extra (repeatable)')
+    init.add_argument('--group', action='append', default=[], help='dependency group, e.g. dev (repeatable)')
+    init.set_defaults(callback=command_init)
+    install = sub.add_parser('install', help='install extra packages using pip with PyTorch constraint')
+    install.add_argument('name')
+    install.add_argument('packages', nargs='+')
+    install.set_defaults(callback=command_install)
+    check = sub.add_parser('check', help='check PyTorch inheritance and dependency metadata')
+    check.add_argument('name')
+    check.set_defaults(callback=command_check)
+    return p
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        args.callback(args)
+    except (ValueError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        print(f'sandbox-py: {exc}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
