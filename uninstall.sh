@@ -8,7 +8,7 @@ Usage: ./uninstall.sh [--purge-data] [--yes]
 
 Without options: remove only installed sandbox CLI, helper code, Docker build
 recipes and the sandbox-py helper. KEEP config, denylist, trusted recipes,
-shared external tools (OpenCode/jq), sandbox repositories, Docker volumes,
+shared external tools (such as OpenCode), sandbox repositories, Docker volumes,
 images and build cache.
 
 --purge-data: additionally delete host-side configuration, shared tools and

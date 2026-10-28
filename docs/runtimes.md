@@ -1,6 +1,6 @@
 # Bring your own runtime
 
-`sandbox` does not need to know which applications you run. A runtime is a **named Docker image selection plus a small amount of execution configuration**. The two supplied runtime profiles, `base` and `python-xpu`, are examples.
+`sandbox` does not need to know which applications you run. A runtime is a **named Docker image selection plus a small amount of execution configuration**. The two supplied runtime profiles, `base` and `python-xpu`, are examples; both include `jq` and `tmux` in their image layers.
 
 ## 1. Use an existing image
 
@@ -22,7 +22,7 @@ sandbox run dev --runtime node
 sandbox exec dev --runtime node -- node --version
 ```
 
-The image is **pinned by immutable image ID** in the named sandbox's metadata on first use. Replacing the tag in the Docker store doesn't silently change existing sandboxes. To adopt a changed image, create another named sandbox (or intentionally implement a migration); Python venvs should not be carried across incompatible images.
+The image is **pinned by immutable image ID** in the named sandbox's metadata on first use. Replacing the tag in the Docker store doesn't silently change existing sandboxes. To adopt a changed image, create a new named sandbox; Python venvs should not be carried across incompatible images.
 
 ## 2. Build a custom image
 
@@ -105,4 +105,4 @@ References: [Docker BuildKit](https://docs.docker.com/build/buildkit/), [Docker 
 
 ## 6. No implicit built-in runtime logic
 
-The example profiles `base` and `python-xpu` are normal entries in `config.toml`, exactly like third-party profiles. You can rename, remove, or replace them. `sandbox build NAME` uses the `dockerfile` and `context` declared in each profile; `sandbox build preparer` remains a separate reserved core command. See [Configuration](configuration.md) and [Migration](migration.md).
+The example profiles `base` and `python-xpu` are normal entries in `config.toml`, exactly like third-party profiles. You can rename, remove, or replace them. `sandbox build NAME` uses the `dockerfile` and `context` declared in each profile; `sandbox build preparer` remains a separate reserved core command. See [Configuration](configuration.md).

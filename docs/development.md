@@ -10,7 +10,7 @@ images/base/                   # optional general-purpose Ubuntu runtime
 images/python-xpu/             # optional Intel XPU example runtime
 examples/config.toml           # default config, runtime examples
 recipes/                       # trusted host-side setup scripts
- tools/                        # sandbox-py and optional binary installers
+tools/                         # sandbox-py and optional OpenCode installer
 tests/                         # unit/integration-like local Git tests
 ```
 
@@ -21,7 +21,7 @@ The preparer source is copied into its Docker image. The agent runtime receives 
 ```bash
 python -m compileall -q libexec/sandboxlib
 python -m unittest discover -s tests -v
-bash -n install.sh tools/install-opencode.sh tools/install-jq.sh recipes/*.sh
+bash -n install.sh tools/install-opencode.sh recipes/*.sh
 ```
 
 These tests cover configuration, Git history preparation/import, preflight, CLI argument construction, recipe confirmation and simulated pip reuse. Many tests execute *real local Git* operations. They do **not** launch rootless Docker or exercise a real GPU; those still need a separate integration test on Linux.
@@ -50,12 +50,12 @@ Usually **do not edit Python source**. Add `[runtimes.NAME]` in `config.toml`, r
 
 A profile should not hardcode language or GPU checks into core `cli.py`. Device passthrough and per-image venv persistence belong to the configurable profile. New image recipes must preserve Docker layer/cache reuse and must not copy the user's repository into the build context.
 
-## Changes and configuration migrations
+## Changes to configuration and storage
 
-The installer preserves existing local config/denylist/recipes. Prefer additive config changes with migration tests. New images are *not* automatically substituted into existing sandboxes, which pin exact image IDs. Any proposed volume schema or import-graph change should include a migration plan, tests and a clear data-loss warning.
+The installer preserves user-maintained configuration, denylist and recipes. New images are *not* automatically substituted into existing sandboxes, which pin exact image IDs. Changes to the volume schema or Git import graph must be tested and documented with clear data-loss warnings.
 
 ## Roadmap
 
 See [release-readiness](release-readiness.md). High-value next tasks: true rootless Docker end-to-end tests, a documented threat model reviewed by a second maintainer, improved cleanup/recovery, and more robust imported Git metadata/submodules/LFS handling. Avoid adding an app-specific plugin system unless a concrete repeated use case justifies it.
 
-The CLI intentionally does not accept former settings or attach historical OpenCode-specific volumes. If you make a breaking change, document a **one-time manual migration** rather than adding indefinite compatibility branches. Test the strict configuration parser and generic runtime build resolution.
+Test the strict configuration parser and generic runtime build resolution whenever those interfaces change.

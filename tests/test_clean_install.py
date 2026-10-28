@@ -1,4 +1,4 @@
-"""Strict config, bundled paths, and safe uninstall upgrade behavior."""
+"""Strict config, bundled paths, install and uninstall behavior."""
 from pathlib import Path
 import os
 import shutil
@@ -38,7 +38,6 @@ class CleanInstallTests(unittest.TestCase):
             self.assertEqual(cfg['runtimes']['python-xpu']['devices'], [])
             self.assertEqual(cli.selected_runtime(None, cfg), 'base')
             self.assertNotIn('images', cfg)
-            self.assertNotIn('_legacy', cfg)
             target = cli.resolve_build_path(cfg['runtimes']['base']['dockerfile'])
             self.assertEqual(target, self.home / 'data/sandbox/images/base/Dockerfile')
             with self.assertRaises(ValueError):
@@ -48,16 +47,18 @@ class CleanInstallTests(unittest.TestCase):
         self.install()
         data = self.home / 'data/sandbox'
         lib = self.home / '.local/libexec/sandbox'
-        (data / 'images/opencode').mkdir()
-        (data / 'images/opencode/Dockerfile').write_text('FROM scratch\n')
+        (data / 'images/unmanaged').mkdir()
+        (data / 'images/unmanaged/Dockerfile').write_text('FROM scratch\n')
         (data / 'libexec/sandboxlib/old.py').write_text('# obsolete\n')
         (lib / 'sandboxlib/old.py').write_text('# obsolete\n')
         (data / 'tools/bin/opencode').write_text('user tool\n')
+        (data / 'tool-installers/unmanaged.sh').write_text('# stale installer\n')
         self.install()
-        self.assertFalse((data / 'images/opencode').exists())
+        self.assertFalse((data / 'images/unmanaged').exists())
         self.assertFalse((data / 'libexec/sandboxlib/old.py').exists())
         self.assertFalse((lib / 'sandboxlib/old.py').exists())
         self.assertEqual((data / 'tools/bin/opencode').read_text(), 'user tool\n')
+        self.assertFalse((data / 'tool-installers/unmanaged.sh').exists())
 
     def test_uninstall_preserves_state_and_requires_empty_instances_for_purge(self):
         self.install()
@@ -85,18 +86,15 @@ class CleanInstallTests(unittest.TestCase):
         self.assertFalse(config.exists())
         self.assertFalse(state.exists())
 
-    def test_old_config_keys_rejected(self):
+    def test_unknown_config_key_rejected(self):
         self.install()
         path = self.home / 'config/sandbox/config.toml'
-        text = path.read_text()
-        for old in ('[images]\nbase = "old"\n',
-                    'gpu_devices = []\n',
-                    'mount_global_skills = true\n'):
-            path.write_text(text.replace('shared_tools = true', 'shared_tools = true\n'+old)
-                            if old != '[images]\nbase = "old"\n' else text + '\n'+old)
-            with self.subTest(old=old), mock.patch.object(settings, 'config_dir', return_value=path.parent):
-                with self.assertRaises(ValueError):
-                    settings.load()
+        path.write_text(path.read_text().replace('shared_tools = true',
+                                                 'shared_tools = true\nunknown = true'))
+        with mock.patch.object(settings, 'config_dir', return_value=path.parent):
+            with self.assertRaisesRegex(ValueError, r'unknown \[sandbox\] configuration key'):
+                settings.load()
+
 
 if __name__ == '__main__':
     unittest.main()

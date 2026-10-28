@@ -8,7 +8,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git git-lfs openssh-client curl bash python3 \
-      python3-pip python3-venv python-is-python3 build-essential ripgrep less
+      python3-pip python3-venv python-is-python3 build-essential ripgrep less jq tmux
 RUN mkdir -p /workspace /opt/venvs
 WORKDIR /workspace
 CMD ["/bin/bash"]

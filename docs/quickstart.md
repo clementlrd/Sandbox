@@ -6,7 +6,7 @@ This guide uses a rootless Docker daemon on Linux. The CLI is currently a Linux/
 
 - Linux host with Python 3.11+, Git, Docker and `docker buildx`/BuildKit.
 - A **rootless** Docker daemon, configured and selected as the current Docker context. Rootful mode is intentionally rejected.
-- `curl`, `tar`, `sha256sum` if you choose to download the optional OpenCode or jq executables.
+- `curl`, `tar`, `sha256sum` if you choose to download the optional OpenCode executable.
 - Enough disk space for your chosen runtime; large GPU/PyTorch images can require many GB.
 
 On Arch, typical packages are `python`, `git`, `docker`, `docker-buildx`, `curl`, `tar`, and `coreutils`. Rootless setup additionally requires appropriate subordinate UID/GID ranges and your distribution's rootless Docker components. Follow [Docker's rootless documentation](https://docs.docker.com/engine/security/rootless/) rather than blindly enabling a rootful daemon.
@@ -19,16 +19,14 @@ docker info --format '{{json .SecurityOptions}}'  # includes "rootless"
 
 ## Install
 
-Upgrading from an earlier archive? Read [one-time migration](migration.md) **before installing**; the new parser rejects deprecated config fields.
-
 From the repository root:
 
 ```bash
-./install.sh --no-tools       # does not download OpenCode/jq
+./install.sh --no-tools       # does not download OpenCode
 # or: ./install.sh           # interactive tool selection
 ```
 
-The new installer replaces its managed code/build resources instead of overlaying removed files. It installs the `sandbox` command under `~/.local/bin`, Python helpers under `~/.local/libexec/sandbox`, examples/config under `$XDG_CONFIG_HOME/sandbox` (default `~/.config/sandbox`) and Docker build resources/tools under `$XDG_DATA_HOME/sandbox` (default `~/.local/share/sandbox`). Existing config, denylist and recipes are preserved.
+The installer replaces its managed code/build resources. It installs the `sandbox` command under `~/.local/bin`, Python helpers under `~/.local/libexec/sandbox`, examples/config under `$XDG_CONFIG_HOME/sandbox` (default `~/.config/sandbox`) and Docker build resources/tools under `$XDG_DATA_HOME/sandbox` (default `~/.local/share/sandbox`). Existing config, denylist and recipes are preserved.
 
 Ensure `~/.local/bin` is in `PATH`. The installer does not need sudo.
 
@@ -43,7 +41,7 @@ sandbox build base
 sandbox build python-xpu
 ```
 
-`create`, `run`, `exec`, `setup` and `import` never build images. The `base` and `python-xpu` profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. See [Runtimes](runtimes.md) for third-party images and caching.
+`create`, `run`, `exec`, `setup` and `import` never build images. The `base` and `python-xpu` images include `jq` and `tmux`. After building, verify with `sandbox exec dev -- jq --version` and `sandbox exec dev -- tmux -V`. `tmux` servers do not survive the removal of an ephemeral container. Their profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. See [Runtimes](runtimes.md) for third-party images and caching.
 
 ## Create a named sandbox
 

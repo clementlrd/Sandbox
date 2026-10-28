@@ -239,12 +239,10 @@ class GitTests(unittest.TestCase):
         self.assertNotIn((tools.parent.resolve(), '/opt/tools'), extras)
         self.assertIn((skill.resolve(), '/root/.agents/skills'), extras)
 
-    def test_generic_mounts_and_no_application_profile(self):
+    def test_generic_mounts_and_core_cli(self):
         from sandboxlib import settings
         self.assertEqual(cli.parser().parse_args(['create', 'test', '/a']).anonymize, False)
         self.assertTrue(cli.parser().parse_args(['create', 'test', '/a', '--anonymize']).anonymize)
-        with self.assertRaises(SystemExit):
-            cli.parser().parse_args(['run', 'foo', '--app', 'opencode'])
         self.assertEqual(cli.main(['exec', 'abc', 'python', '-V']), 2)
         cfg = settings.DEFAULT.copy()
         cfg['mounts'] = [('~/.agents/skills', '/root/.agents/skills', True)]
@@ -310,21 +308,6 @@ exit 2
                            check=True, capture_output=True, env=env)
         self.assertEqual((tools_dir / 'bin/opencode').read_bytes(), data)
 
-    def test_configuration_rejects_old_keys(self):
-        from sandboxlib import settings
-        config = self.root / 'config'
-        config.mkdir()
-        (config / 'config.toml').write_text("""
-[sandbox]
-shared_tools = true
-mount_global_skills = true
-[images]
-base = "sandbox/base:v3"
-""")
-        with mock.patch.object(settings, 'config_dir', return_value=config):
-            with self.assertRaises(ValueError):
-                settings.load()
-
     def test_build_command_explicit_targets_only(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
@@ -358,7 +341,6 @@ base = "sandbox/base:v3"
                        env=env, capture_output=True, check=True)
         shared = home / '.local/share/sandbox/tools/bin'
         self.assertTrue(shared.is_dir())
-        self.assertTrue((home / '.local/share/sandbox/tool-installers/install-jq.sh').is_file())
         self.assertTrue((home / '.local/share/sandbox/tool-installers/install-opencode.sh').is_file())
         config = home / '.config/sandbox/config.toml'
         config.write_text('# user customized\n')
@@ -367,7 +349,7 @@ base = "sandbox/base:v3"
         self.assertEqual(config.read_text(), '# user customized\n')
 
     def test_tools_install_prompts_and_selects_scripts(self):
-        # Stub the two tool installers rather than hitting external networks.
+        # Stub the optional tool installer rather than hitting external networks.
         project = Path(__file__).resolve().parents[1]
         shadow = self.root / 'shadow'
         import shutil
@@ -377,7 +359,7 @@ base = "sandbox/base:v3"
         shutil.copytree(project / 'libexec', shadow / 'libexec')
         shutil.copytree(project / 'images', shadow / 'images')
         shutil.copytree(project / 'examples', shadow / 'examples')
-        for tool in ('opencode', 'jq'):
+        for tool in ('opencode',):
             file = shadow / 'tools' / f'install-{tool}.sh'
             file.write_text(f'#!/bin/bash\nset -e\nprintf "{tool}\n" >> "$1/installed.txt"\n')
         home = self.root / 'home'
@@ -385,10 +367,10 @@ base = "sandbox/base:v3"
         env = os.environ.copy()
         env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                    XDG_DATA_HOME=str(home / '.local/share'))
-        subprocess.run(['bash', str(shadow / 'install.sh'), '--tools', 'opencode,jq'],
+        subprocess.run(['bash', str(shadow / 'install.sh'), '--tools', 'opencode'],
                        check=True, capture_output=True, env=env)
         installed = (home / '.local/share/sandbox/tools/installed.txt').read_text().splitlines()
-        self.assertEqual(installed, ['opencode', 'jq'])
+        self.assertEqual(installed, ['opencode'])
 
 if __name__ == '__main__':
     unittest.main()

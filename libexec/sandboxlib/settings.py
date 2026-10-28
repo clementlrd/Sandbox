@@ -1,4 +1,4 @@
-"""Strict, application-agnostic sandbox settings. No compatibility shims."""
+"""Strict, application-agnostic sandbox settings."""
 from __future__ import annotations
 from pathlib import Path, PurePosixPath
 import re
@@ -33,7 +33,7 @@ def load():
     obj = DEFAULT.copy()
     sc = raw.get('sandbox', {})
     if not isinstance(sc, dict) or set(sc) - set(DEFAULT):
-        raise ValueError('unknown [sandbox] key; migrate config using docs/migration.md')
+        raise ValueError('unknown [sandbox] configuration key')
     obj.update(sc)
 
     if not isinstance(obj['memory'], str) or not re.fullmatch(r'\d+[bkmgBKMG]?', obj['memory']):

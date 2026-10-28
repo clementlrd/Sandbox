@@ -8,8 +8,6 @@
 
 ## Quick start
 
-**Upgrading from an earlier sandbox archive?** First migrate your existing `config.toml` using the [one-time migration guide](docs/migration.md). This release intentionally rejects older keys instead of translating them automatically. Existing named sandboxes and their volumes can normally remain untouched.
-
 Requirements: Linux, Python 3.11+, Git, Docker CLI + BuildKit, and a working **rootless Docker daemon**. Set up rootless Docker according to [the official guide](https://docs.docker.com/engine/security/rootless/).
 
 ```bash
@@ -62,9 +60,11 @@ See [Adding a runtime](docs/runtimes.md) for the complete contract, build cachin
 The optional host tools directory `${XDG_DATA_HOME:-~/.local/share}/sandbox/tools` is mounted read-only at `/opt/tools`. Put compatible binaries under `tools/bin`; the launcher prepends `/opt/tools/bin` to the runtime's existing `PATH`. Applications do not need profiles. For optional installers:
 
 ```bash
-./install.sh --tools opencode,jq  # downloads external executables onto the host
+./install.sh --tools opencode  # optional standalone CLI, installed on host
 # Or use ./install.sh --no-tools to avoid downloads
 ```
+
+The bundled `base` and `python-xpu` images include **`jq` and `tmux`** by default; custom runtimes control their own system packages. You must rebuild those images to add the tools. An existing host copy of `tools/bin/jq` takes precedence until you remove it manually. `tmux` processes stop when their ephemeral container exits; only mounted data survives.
 
 Application data/config/cache volumes persist **per sandbox**. `/opt/venvs` volumes persist **per sandbox and exact runtime image ID**, when enabled. Runtime system package changes made during a session disappear with the container. The Git workspace is a writable host-side bind mount and persists independently of the container.
 
@@ -87,7 +87,6 @@ Recipes live in `~/.config/sandbox/recipes` and can access host resources. Only 
 - [Quick start and lifecycle](docs/quickstart.md)
 - [Add your own Docker runtime](docs/runtimes.md)
 - [Configuration reference](docs/configuration.md)
-- [One-time migration from earlier configurations](docs/migration.md)
 - [Safe uninstall and optional complete cleanup](docs/uninstall.md)
 - [Architecture and storage model](docs/architecture.md)
 - [Security and privacy limitations](docs/security.md)

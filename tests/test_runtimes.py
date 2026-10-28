@@ -29,6 +29,13 @@ class RuntimeProfiles(unittest.TestCase):
         with mock.patch.object(settings, 'config_dir', return_value=self.config):
             return settings.load()
 
+    def test_bundled_runtimes_ship_jq_and_tmux(self):
+        project = Path(__file__).resolve().parents[1]
+        for profile in ('base', 'python-xpu'):
+            with self.subTest(profile=profile):
+                dockerfile = (project / 'images' / profile / 'Dockerfile').read_text()
+                self.assertRegex(dockerfile, r'\bripgrep less jq tmux\b')
+
     def test_custom_image_profile_without_build_file(self):
         cfg = self.load_text('''
 [runtimes.node]

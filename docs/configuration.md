@@ -1,6 +1,6 @@
 # Configuration reference
 
-Configuration is read from `${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/config.toml`. The installer creates it only when absent. The current format is **strict**: old `[images]`, OpenCode-specific fields, global GPU settings and global `venv_volume` are rejected, not silently translated. If upgrading an existing install, follow [the one-time migration guide](migration.md) first.
+Configuration is read from `${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/config.toml`. The installer creates it only when absent. The configuration format is **strict**: unknown tables and keys are rejected. See [the example](../examples/config.toml) for all supported settings.
 
 See [the complete example](../examples/config.toml).
 
@@ -103,4 +103,4 @@ Recipes are executable trusted host scripts. Use `sandbox setup NAME RECIPE` or 
 | `/opt/tools` | Host read-only bind | Shared |
 | `[[mounts]]` | Host read-only binds | Per configured mount |
 
-The configuration is **not copied** into existing sandboxes on upgrade. All runtimes use the currently installed host config, and the pinned images and persistent volumes survive application-container restarts.
+The configuration is read from the host at each execution; it is not copied into named sandboxes. Runtimes use their pinned image IDs and persistent volumes across application-container restarts.

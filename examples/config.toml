@@ -1,5 +1,4 @@
-# Fresh-install configuration. See docs/migration.md before upgrading from
-# earlier sandbox releases: obsolete settings are deliberately rejected.
+# Default configuration for the bundled runtimes.
 [sandbox]
 memory = "8g"
 pids_limit = 512

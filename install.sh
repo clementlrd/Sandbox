@@ -8,7 +8,7 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sandbox"
 
 usage() {
   cat <<'HELP'
-Usage: ./install.sh [--no-tools | --tools opencode,jq | --tools none]
+Usage: ./install.sh [--no-tools | --tools opencode | --tools none]
 
 Installs the sandbox CLI, Docker build resources, and installer scripts.
 Interactively prompts for optional tools when stdin is a terminal.
@@ -33,8 +33,9 @@ install -m 755 "$ROOT/bin/sandbox" "$BIN/sandbox"
 # Always install the generic Python environment manager into the shared tools mount.
 install -m 755 "$ROOT/tools/sandbox-py" "$DATA/tools/bin/sandbox-py"
 # These paths contain installer-managed program resources, not user state.
-# Replace instead of overlaying, so deleted compatibility code cannot linger.
-rm -rf -- "$LIB/sandboxlib" "$DATA/images" "$DATA/libexec/sandboxlib"
+# Installed program files are managed as a unit; user data lives elsewhere.
+rm -rf -- "$LIB/sandboxlib" "$DATA/images" "$DATA/libexec/sandboxlib" "$DATA/tool-installers"
+install -d -m 755 "$DATA/tool-installers"
 cp -a "$ROOT/libexec/sandboxlib" "$LIB/"
 cp -a "$ROOT/images" "$DATA/"
 cp -a "$ROOT/libexec/sandboxlib" "$DATA/libexec/"
@@ -56,7 +57,7 @@ DOCKERIGNORE
   chmod 644 "$DATA/.dockerignore"
   printf 'Note: project .dockerignore missing; installed generated default.\n' >&2
 fi
-# Existing config/denylist are never overwritten during an upgrade.
+# Configuration and the private denylist are user-owned files.
 if [[ ! -e "$CONFIG/config.toml" ]]; then
   install -m 600 "$ROOT/examples/config.toml" "$CONFIG/config.toml"
 fi
@@ -67,7 +68,7 @@ if [[ ! -e "$CONFIG/apps/opencode.jsonc" ]]; then
   install -m 600 "$ROOT/examples/opencode.jsonc" "$CONFIG/apps/opencode.jsonc"
 fi
 
-# Preserve user-maintained recipes on upgrade. Install only missing examples.
+# Leave user-authored recipes untouched; add examples only if absent.
 for recipe in "$ROOT"/recipes/*.sh; do
   [[ -f "$recipe" ]] || continue
   dest="$CONFIG/recipes/$(basename "$recipe")"
@@ -78,23 +79,22 @@ done
 
 if [[ -z "$CHOICE" && -t 0 ]]; then
   printf '\nOptional shared tools (installed on the host, mounted RO inside sandboxes):\n'
-  printf '  1) OpenCode standalone CLI\n  2) jq\n'
+  printf '  1) OpenCode standalone CLI\n'
   printf 'Enter numbers separated by spaces, "all", or "none" [none]: '
   IFS= read -r CHOICE || CHOICE=none
 fi
 CHOICE="${CHOICE:-none}"
-# Support --tools opencode,jq, '1 2', and all/none.
+# Support --tools opencode, '1', and all/none.
 CHOICE="${CHOICE//,/ }"
 case "$CHOICE" in
-  all) CHOICE='opencode jq' ;;
+  all) CHOICE='opencode' ;;
   none) CHOICE='' ;;
 esac
 selected=()
 for item in $CHOICE; do
   case "$item" in
     1|opencode) item=opencode ;;
-    2|jq) item=jq ;;
-    *) echo "Unknown tool selection: $item (valid: opencode,jq,all,none)" >&2; exit 2 ;;
+    *) echo "Unknown tool selection: $item (valid: opencode,all,none)" >&2; exit 2 ;;
   esac
   if [[ ! " ${selected[*]:-} " == *" $item "* ]]; then
     selected+=("$item")
@@ -113,8 +113,7 @@ Installed sandbox into:
   $DATA/tool-installers
   $CONFIG/recipes (trusted host-side setup recipes)
   $CONFIG
-Existing config, denylist, recipes, tools and sandboxes were preserved.
-Existing config files must be migrated manually if they contain removed keys.
+User config, denylist, recipes, tools and sandboxes are preserved.
 Run: sandbox runtimes
 Ensure $BIN is in PATH.
 EOF
