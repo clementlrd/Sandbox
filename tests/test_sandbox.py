@@ -130,7 +130,8 @@ class GitTests(unittest.TestCase):
         from sandboxlib import settings
         commit(self.original, 'start')
         cfg = settings.DEFAULT.copy()
-        cfg['images'] = settings.IMAGES.copy()
+        cfg['preparer'] = {'image': 'sandbox/preparer:v1'}
+        cfg['runtimes'] = {'base': {'image':'sandbox/base:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}, 'python-xpu': {'image':'sandbox/python-xpu:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}}
         state = self.root / 'state' / 'instances'
         args = type('Args', (), {'name': 'test-01', 'source': str(self.original),
                                   'anonymize': False, 'denylist': None})()
@@ -191,10 +192,9 @@ class GitTests(unittest.TestCase):
     def test_shared_tools_mount_and_python_path_preservation(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
-        cfg['images'] = settings.IMAGES.copy()
+        cfg['preparer'] = {'image': 'sandbox/preparer:v1'}
+        cfg['runtimes'] = {'base': {'image':'sandbox/base:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}, 'python-xpu': {'image':'sandbox/python-xpu:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}}
         cfg['mounts'] = []
-        cfg['_legacy'] = {}
-        cfg['gpu_devices'] = []
         tools = self.root / 'resources/tools/bin'
         tools.mkdir(parents=True)
         meta = {'id': 'abcd', 'name': 'test', 'anonymized': False,
@@ -218,9 +218,9 @@ class GitTests(unittest.TestCase):
     def test_anonymized_scans_skills_not_shared_tools(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
-        cfg['images'] = settings.IMAGES.copy()
+        cfg['preparer'] = {'image': 'sandbox/preparer:v1'}
+        cfg['runtimes'] = {'base': {'image':'sandbox/base:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}, 'python-xpu': {'image':'sandbox/python-xpu:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}}
         cfg['mounts'] = []
-        cfg['_legacy'] = {}
         tools = self.root / 'resources/tools/bin'
         tools.mkdir(parents=True)
         skill = self.root / 'skills'
@@ -239,34 +239,30 @@ class GitTests(unittest.TestCase):
         self.assertNotIn((tools.parent.resolve(), '/opt/tools'), extras)
         self.assertIn((skill.resolve(), '/root/.agents/skills'), extras)
 
-    def test_mount_options_and_legacy_compatibility(self):
+    def test_generic_mounts_and_no_application_profile(self):
         from sandboxlib import settings
-        self.assertEqual(cli.image_profile('python-xpu'), 'python-xpu')
-        with self.assertRaises(ValueError):
-            cli.image_profile('bogus')
         self.assertEqual(cli.parser().parse_args(['create', 'test', '/a']).anonymize, False)
         self.assertTrue(cli.parser().parse_args(['create', 'test', '/a', '--anonymize']).anonymize)
         with self.assertRaises(SystemExit):
             cli.parser().parse_args(['run', 'foo', '--app', 'opencode'])
         self.assertEqual(cli.main(['exec', 'abc', 'python', '-V']), 2)
         cfg = settings.DEFAULT.copy()
-        cfg['mounts'] = []
-        cfg['_legacy'] = {'mount_global_skills': True, 'opencode_config': ''}
+        cfg['mounts'] = [('~/.agents/skills', '/root/.agents/skills', True)]
         with mock.patch.dict(os.environ, {'HOME': str(self.root)}):
             expected = self.root / '.agents/skills'
             expected.mkdir(parents=True)
             mounts = settings.read_only_mounts(cfg)
-        self.assertIn((expected.resolve(), '/root/.agents/skills'), mounts)
+        self.assertEqual(mounts, [(expected.resolve(), '/root/.agents/skills')])
 
-    def test_legacy_and_generic_mounts_deduplicate(self):
+    def test_duplicate_mount_targets_rejected(self):
         from sandboxlib import settings
         with mock.patch.dict(os.environ, {'HOME': str(self.root)}):
             source = self.root / '.agents/skills'
             source.mkdir(parents=True)
-            cfg = {'mounts': [('~/.agents/skills', '/root/.agents/skills', True)],
-                   '_legacy': {'mount_global_skills': True}}
-            self.assertEqual(settings.read_only_mounts(cfg),
-                             [(source.resolve(), '/root/.agents/skills')])
+            cfg = {'mounts': [('~/.agents/skills', '/root/.agents/skills', True),
+                              ('~/.agents/skills', '/root/.agents/skills', True)]}
+            with self.assertRaisesRegex(ValueError, 'duplicate'):
+                settings.read_only_mounts(cfg)
 
     def test_opencode_installer_extracts_standalone_tarball(self):
         import hashlib
@@ -314,7 +310,7 @@ exit 2
                            check=True, capture_output=True, env=env)
         self.assertEqual((tools_dir / 'bin/opencode').read_bytes(), data)
 
-    def test_config_parses_new_and_old_image_tags(self):
+    def test_configuration_rejects_old_keys(self):
         from sandboxlib import settings
         config = self.root / 'config'
         config.mkdir()
@@ -324,23 +320,19 @@ shared_tools = true
 mount_global_skills = true
 [images]
 base = "sandbox/base:v3"
-opencode = "sandbox/opencode:v1"
-[[mounts]]
-source = "~/example"
-target = "/root/example"
-optional = true
 """)
         with mock.patch.object(settings, 'config_dir', return_value=config):
-            cfg = settings.load()
-        self.assertTrue(cfg['shared_tools'])
-        self.assertEqual(cfg['images']['base'], 'sandbox/base:v3')
-        self.assertNotIn('opencode', cfg['images'])
-        self.assertEqual(cfg['mounts'][0][1], '/root/example')
+            with self.assertRaises(ValueError):
+                settings.load()
 
     def test_build_command_explicit_targets_only(self):
         from sandboxlib import settings
         cfg = settings.DEFAULT.copy()
-        cfg['images'] = settings.IMAGES.copy()
+        cfg['preparer'] = {'image': 'sandbox/preparer:v1'}
+        cfg['runtimes'] = {'python-xpu': {'image': 'sandbox/python-xpu:v1', 'shell': '/bin/bash',
+                                      'venv_volume': True, 'devices': [],
+                                      'dockerfile': 'bundled:images/python-xpu/Dockerfile',
+                                      'context': 'bundled:.'}}
         fake = self.root / 'resources'
         (fake / 'images/python-xpu').mkdir(parents=True)
         (fake / 'images/python-xpu/Dockerfile').write_text('FROM scratch')

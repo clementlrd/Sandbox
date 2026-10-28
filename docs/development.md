@@ -50,10 +50,12 @@ Usually **do not edit Python source**. Add `[runtimes.NAME]` in `config.toml`, r
 
 A profile should not hardcode language or GPU checks into core `cli.py`. Device passthrough and per-image venv persistence belong to the configurable profile. New image recipes must preserve Docker layer/cache reuse and must not copy the user's repository into the build context.
 
-## Changes and backward compatibility
+## Changes and configuration migrations
 
 The installer preserves existing local config/denylist/recipes. Prefer additive config changes with migration tests. New images are *not* automatically substituted into existing sandboxes, which pin exact image IDs. Any proposed volume schema or import-graph change should include a migration plan, tests and a clear data-loss warning.
 
 ## Roadmap
 
 See [release-readiness](release-readiness.md). High-value next tasks: true rootless Docker end-to-end tests, a documented threat model reviewed by a second maintainer, improved cleanup/recovery, and more robust imported Git metadata/submodules/LFS handling. Avoid adding an app-specific plugin system unless a concrete repeated use case justifies it.
+
+The CLI intentionally does not accept former settings or attach historical OpenCode-specific volumes. If you make a breaking change, document a **one-time manual migration** rather than adding indefinite compatibility branches. Test the strict configuration parser and generic runtime build resolution.

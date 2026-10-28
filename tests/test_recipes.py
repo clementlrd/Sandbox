@@ -20,7 +20,9 @@ class SetupTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.recipes = self.root / 'recipes'
         self.recipes.mkdir(mode=0o700)
-        self.cfg = {'setup': {'recipes_dir': str(self.recipes),
+        self.cfg = {'default_runtime': 'base',
+                    'runtimes': {'python-xpu': {'shell': '/bin/bash'}},
+                    'setup': {'recipes_dir': str(self.recipes),
                               'confirm_host_execution': True}}
         self.meta = {'name': 'agent', 'id': 'abc123', 'setup_recipes': {}}
         self.script = self.recipes / 'example.sh'
@@ -40,7 +42,10 @@ class SetupTests(unittest.TestCase):
     def test_config_setup_section(self):
         config = self.root / 'config'
         config.mkdir()
-        (config / 'config.toml').write_text('[setup]\nrecipes_dir = "~/recipes"\n'
+        (config / 'config.toml').write_text('[sandbox]\ndefault_runtime = "base"\n'
+                                            '[preparer]\nimage = "sandbox/preparer:v1"\n'
+                                            '[runtimes.base]\nimage = "sandbox/base:v1"\n'
+                                            '[setup]\nrecipes_dir = "~/recipes"\n'
                                             'confirm_host_execution = false\n')
         with mock.patch.object(settings, 'config_dir', return_value=config):
             obj = settings.load()

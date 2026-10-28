@@ -19,6 +19,8 @@ docker info --format '{{json .SecurityOptions}}'  # includes "rootless"
 
 ## Install
 
+Upgrading from an earlier archive? Read [one-time migration](migration.md) **before installing**; the new parser rejects deprecated config fields.
+
 From the repository root:
 
 ```bash
@@ -26,9 +28,11 @@ From the repository root:
 # or: ./install.sh           # interactive tool selection
 ```
 
-The installer installs the `sandbox` command under `~/.local/bin`, Python helpers under `~/.local/libexec/sandbox`, examples/config under `$XDG_CONFIG_HOME/sandbox` (default `~/.config/sandbox`) and Docker build resources/tools under `$XDG_DATA_HOME/sandbox` (default `~/.local/share/sandbox`). Existing config, denylist and recipes are preserved.
+The new installer replaces its managed code/build resources instead of overlaying removed files. It installs the `sandbox` command under `~/.local/bin`, Python helpers under `~/.local/libexec/sandbox`, examples/config under `$XDG_CONFIG_HOME/sandbox` (default `~/.config/sandbox`) and Docker build resources/tools under `$XDG_DATA_HOME/sandbox` (default `~/.local/share/sandbox`). Existing config, denylist and recipes are preserved.
 
 Ensure `~/.local/bin` is in `PATH`. The installer does not need sudo.
+
+To uninstall later, see [Uninstall](uninstall.md).
 
 ## Prepare images explicitly
 
@@ -39,7 +43,7 @@ sandbox build base
 sandbox build python-xpu
 ```
 
-`create`, `run`, `exec`, `setup` and `import` never build images. See [Runtimes](runtimes.md) for third-party images and caching.
+`create`, `run`, `exec`, `setup` and `import` never build images. The `base` and `python-xpu` profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. See [Runtimes](runtimes.md) for third-party images and caching.
 
 ## Create a named sandbox
 

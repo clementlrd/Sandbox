@@ -1,50 +1,69 @@
 # Configuration reference
 
-User settings are read from `${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/config.toml`. Existing files are **not overwritten** on reinstall. Restart the application container to pick up changes; named sandbox repositories and volumes persist across runs.
+Configuration is read from `${XDG_CONFIG_HOME:-$HOME/.config}/sandbox/config.toml`. The installer creates it only when absent. The current format is **strict**: old `[images]`, OpenCode-specific fields, global GPU settings and global `venv_volume` are rejected, not silently translated. If upgrading an existing install, follow [the one-time migration guide](migration.md) first.
 
-## Sandbox-wide settings
+See [the complete example](../examples/config.toml).
+
+## Global sandbox settings
 
 ```toml
 [sandbox]
-memory = "8g"              # Docker memory limit
-pids_limit = 512           # maximum container processes
-network = "bridge"        # "bridge" or "none"
-shared_tools = true        # host tools -> /opt/tools, read-only
-venv_volume = true        # default for built-in base/python-xpu profiles
-forward_env = []          # names of host env vars to forward, e.g. ["MY_API_KEY"]
-gpu_devices = []          # legacy default for python-xpu, if not overridden
+memory = "8g"
+pids_limit = 512
+network = "bridge"               # or "none"
+shared_tools = true                # $XDG_DATA_HOME/sandbox/tools -> /opt/tools (RO)
+forward_env = []                  # explicit host env names; values are accessible inside
+# Name must exist under [runtimes.NAME]:
+default_runtime = "base"
 ```
 
-Never forward credentials unnecessarily. If a key is forwarded into a container, processes in that container may read it. Bridge networking means outbound network access is allowed; it is not limited to HTTP GET and does not prevent data uploads.
+`--runtime NAME` overrides `default_runtime` for a single `run`, `exec`, or `setup`. Nothing becomes a permanently active runtime. Network `bridge` does not limit traffic to GET requests; container commands can make outbound connections. The image must be compatible with the host architecture and rootless Docker.
 
-## Built-in images
+## Trusted Git preparer image
 
 ```toml
-[images]
-preparer = "sandbox/preparer:v1"
-base = "sandbox/base:v1"
-python-xpu = "sandbox/python-xpu:v1"
+[preparer]
+image = "sandbox/preparer:v1"
 ```
 
-`preparer` is the separate, network-disabled preparation container, *not* a runtime profile. Existing installations may keep their `[images]` block. OpenCode is now a standalone executable mounted from the tools directory, not an image/profile.
+This is not an application runtime. `sandbox build preparer` builds its packaged Dockerfile, and `sandbox create` uses the resulting local image ID with `--network none`. The preparer may read the original repository during creation; the application runtime cannot.
 
-## Custom runtimes
+## Explicit runtime profiles
+
+**Every runtime is declared explicitly**, even bundled examples. There is no automatic or special-case `base`/`python-xpu` selection.
 
 ```toml
-[runtimes.go]
-image = "local/sandbox-go:1.25"
+[runtimes.base]
+image = "sandbox/base:v1"
+shell = "/bin/bash"
+venv_volume = true
+devices = []
+dockerfile = "bundled:images/base/Dockerfile"
+context = "bundled:."
+
+[runtimes.python-xpu]
+image = "sandbox/python-xpu:v1"
+shell = "/bin/bash"
+venv_volume = true
+devices = ["/dev/dri/renderD128"]
+dockerfile = "bundled:images/python-xpu/Dockerfile"
+context = "bundled:."
+```
+
+Runtime names are lower-case and may contain digits and hyphens. Only `image` is required; defaults are `shell = "/bin/bash"`, `devices = []`, `venv_volume = false`, `dockerfile = null` and `context = null`. User-supplied profiles need no changes to sandbox code:
+
+```toml
+[runtimes.node]
+image = "node:22-bookworm"
 shell = "/bin/bash"
 venv_volume = false
-devices = []
-dockerfile = "~/.config/sandbox/runtimes/go/Dockerfile"
-context = "~/.config/sandbox/runtimes/go"
 ```
 
-The runtime table is optional. Runtime names use lower-case letters, digits and hyphens. `image` is mandatory for new runtimes. `shell` defaults to `/bin/bash`; `venv_volume` defaults to **false** for new runtimes; `devices` defaults to empty. `dockerfile` and `context` are only needed for `sandbox build NAME`; a runtime can instead point at a previously built or pulled image. If context is omitted, the Dockerfile's parent is used. Relative file paths resolve from the sandbox configuration directory.
+For local builds, set `dockerfile` and optionally `context`. Ordinary relative paths are relative to the sandbox configuration directory. A `bundled:` path resolves under the installed `${XDG_DATA_HOME:-$HOME/.local/share}/sandbox` resources; it cannot escape that directory. A runtime without a Dockerfile must be built or pulled separately. No builds run implicitly. See [Runtime guide](runtimes.md).
 
-For the two built-ins, `image` defaults to their `[images]` tags and `venv_volume` inherits the old global default. The built-in `python-xpu` device list inherits the legacy `sandbox.gpu_devices` setting, but `[runtimes.python-xpu].devices` overrides it.
+Devices are passed via Docker `--device` with their numeric host groups. This does not guarantee access under rootless Docker; check ACLs and user namespace mappings. Do not expose a Docker socket or unnecessary devices.
 
-`sandbox runtimes` lists the available profiles. `sandbox run NAME --runtime PROFILE` selects one for the command; there is no concept of a permanently active runtime. The image ID is pinned in the sandbox metadata on first run. See [Runtimes](runtimes.md).
+The `/opt/venvs` volume is created only if `venv_volume = true` and is keyed to both the named sandbox and the **image ID**. Application data/config/cache volumes are per sandbox across all runtimes. The repository is per sandbox. Shared tools are read-only and global.
 
 ## Generic read-only mounts
 
@@ -60,11 +79,9 @@ target = "/root/.config/opencode/opencode.jsonc"
 optional = true
 ```
 
-All configured mounts are **read-only** and available to *every* selected runtime. `optional = true` means skip if the host path does not exist; otherwise missing paths are errors. The current implementation has **no `scan` configuration property**. In anonymized sandboxes, user-configured mounts are included in full denylist scanning, while the built-in trusted host-tools mount is excluded to avoid false positive matches in compiled binaries.
+There are no OpenCode-specific mount flags. All declared mounts are exposed to *every runtime* and included in full denylist scans for anonymized sandboxes. `optional = true` skips missing sources; otherwise missing sources fail. The host-managed `/opt/tools` mount is exempt from binary content scans, as documented in [Security](security.md). No `scan` property is implemented. The launcher refuses mounts overlapping `/workspace`, `/opt/tools` or `/opt/venvs`.
 
-Do not mount SSH keys, private Git credential directories, Docker sockets or arbitrary host paths into an agent environment. The mount system is deliberately restricted from replacing `/workspace`, `/opt/tools` and `/opt/venvs`.
-
-## Setup recipes
+## Trusted setup recipes
 
 ```toml
 [setup]
@@ -72,31 +89,18 @@ recipes_dir = "~/.config/sandbox/recipes"
 confirm_host_execution = true
 ```
 
-Recipes are executable scripts stored on the **host**, with the target sandbox name as `$1`. They may call `sandbox exec NAME --runtime RUNTIME -- COMMAND` and read host credentials, so only run scripts you trust. The system prompts before executing them, unless explicitly confirmed via `--yes` or `confirm_host_execution = false`.
+Recipes are executable trusted host scripts. Use `sandbox setup NAME RECIPE` or `sandbox run NAME --setup RECIPE`. Completion is tracked per sandbox/recipe, not per runtime; reapply with `--force`. Recipes can access your host credentials, so review them before execution.
 
-```bash
-sandbox setup list
-sandbox setup agent opencode-openai --runtime base
-sandbox setup agent opencode-openai --force  # reapply on this sandbox
-sandbox run agent --setup opencode-openai
-```
+## Persistence at a glance
 
-Completion is tracked per **sandbox+recipe name**, *not* per runtime. This is appropriate for app credentials shared across runtimes, but a recipe that mutates runtime-specific Python venvs must be forced/reapplied as necessary. Recipes run only when explicitly requested, not automatically at every startup.
-
-## Persisted paths and configuration behavior
-
-| Path | Origin | Scope |
+| Container location | Host backing | Scope |
 | --- | --- | --- |
-| `/workspace` | Host-side independent clone | Named sandbox |
-| `/root/.local/share` | Docker named volume | Named sandbox |
-| `/root/.config` | Docker named volume | Named sandbox |
-| `/root/.cache` | Docker named volume | Named sandbox |
-| `/opt/venvs` | Docker named volume, if enabled | Named sandbox + **image ID** |
-| `/opt/tools` | Read-only host bind | Shared globally |
-| `[[mounts]]` targets | Read-only host binds | Selected for all runtimes |
+| `/workspace` | Independent Git clone under XDG state | Sandbox |
+| `/root/.local/share` | Named volume (`app-data`) | Sandbox |
+| `/root/.config` | Named volume (`app-config`) | Sandbox |
+| `/root/.cache` | Named volume (`app-cache`) | Sandbox |
+| `/opt/venvs` | Named volume, when enabled | Sandbox + image ID |
+| `/opt/tools` | Host read-only bind | Shared |
+| `[[mounts]]` | Host read-only binds | Per configured mount |
 
-Configuration files mounted via `[[mounts]]` can shadow individual paths within the persistent config volume. Don't try to edit a read-only mounted template from inside the container.
-
-## Legacy fields
-
-`[sandbox].mount_global_skills` and `[sandbox].opencode_config` are still accepted and mapped to equivalent optional read-only mounts. Obsolete `[images].opencode` and `[images].opencode-xpu` are ignored. New installations should use generic `[[mounts]]` and the shared tools directory.
+The configuration is **not copied** into existing sandboxes on upgrade. All runtimes use the currently installed host config, and the pinned images and persistent volumes survive application-container restarts.

@@ -54,7 +54,7 @@ sandbox build node
 sandbox run dev --runtime node
 ```
 
-You may also build externally and specify only the resulting image tag. Dockerfile/context settings are **optional**. Relative `dockerfile` and `context` paths are resolved from the user's sandbox config directory. For custom runtime builds, an omitted `context` defaults to the Dockerfile's parent directory. Built-in `base` and `python-xpu` builds still use the installed image recipes and context. `sandbox build preparer` builds the separate Git preparation image.
+You may also build externally and specify only the resulting image tag. Dockerfile/context settings are **optional**. Relative `dockerfile` and `context` paths are resolved from the user's sandbox config directory. For custom runtime builds, an omitted `context` defaults to the Dockerfile's parent directory. The example `base` and `python-xpu` profiles use explicit `bundled:` build paths in the example configuration. `sandbox build preparer` builds the separate Git preparation image.
 
 **Never set your personal home directory or your private Git repository as a build context.** A Dockerfile can accidentally copy sensitive context files into its layers. Keep build contexts small with a `.dockerignore`.
 
@@ -89,7 +89,7 @@ For an ordinary non-Python runtime, use `venv_volume = false` to avoid unnecessa
 
 ## 5. Caching and disk usage
 
-`docker build` runs with BuildKit and `--progress=plain` by default. Builds are always explicit. BuildKit can reuse unchanged image layers and support cache mounts in your Dockerfile. Choose versioned/digest-pinned base images, place rarely changed package installation steps before source changes, use cache mounts for expensive downloads, and keep the build context small. The Git checkout is **never** copied into the built-in runtime image recipes.
+`docker build` runs with BuildKit and `--progress=plain` by default. Builds are always explicit. BuildKit can reuse unchanged image layers and support cache mounts in your Dockerfile. Choose versioned/digest-pinned base images, place rarely changed package installation steps before source changes, use cache mounts for expensive downloads, and keep the build context small. The Git checkout is **never** copied into the packaged runtime image recipes.
 
 ```bash
 sandbox build node                     # normal cached build
@@ -103,8 +103,6 @@ When adding a custom image, avoid building project source into it: the source is
 
 References: [Docker BuildKit](https://docs.docker.com/build/buildkit/), [Docker build cache optimization](https://docs.docker.com/build/cache/optimize/).
 
-## 6. Backward compatibility
+## 6. No implicit built-in runtime logic
 
-The existing `[images]` configuration remains valid for `preparer`, `base` and `python-xpu`. Former OpenCode image names are ignored for migration. New runtime definitions live in `[runtimes.NAME]`. A `[runtimes.base]` or `[runtimes.python-xpu]` table can override the defaults; the old global `sandbox.gpu_devices` still applies to the built-in `python-xpu` profile unless it supplies its own `devices` list. Third-party profiles must specify `image` and have no devices and no venv volume by default.
-
-`[images]` alone cannot introduce new runtime names; use `[runtimes.NAME]` for those.
+The example profiles `base` and `python-xpu` are normal entries in `config.toml`, exactly like third-party profiles. You can rename, remove, or replace them. `sandbox build NAME` uses the `dockerfile` and `context` declared in each profile; `sandbox build preparer` remains a separate reserved core command. See [Configuration](configuration.md) and [Migration](migration.md).

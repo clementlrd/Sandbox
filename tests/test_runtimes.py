@@ -21,7 +21,11 @@ class RuntimeProfiles(unittest.TestCase):
         self.config.mkdir()
 
     def load_text(self, content):
-        (self.config / 'config.toml').write_text(content)
+        header = ('[sandbox]\ndefault_runtime = "node"\n'
+                  '[preparer]\nimage = "sandbox/preparer:v1"\n')
+        if '[sandbox]' in content:
+            header = '[preparer]\nimage = "sandbox/preparer:v1"\n'
+        (self.config / 'config.toml').write_text(header + content)
         with mock.patch.object(settings, 'config_dir', return_value=self.config):
             return settings.load()
 
@@ -43,19 +47,19 @@ venv_volume = false
         self.assertIn('node', output.getvalue())
         self.assertIn('external', output.getvalue())
 
-    def test_builtins_legacy_and_overrides(self):
+    def test_explicit_runtime_profiles_and_default(self):
         cfg = self.load_text('''
 [sandbox]
-gpu_devices = ["/dev/dri/renderD128"]
-[images]
-base = "my/base:1"
+default_runtime = "python-xpu"
 [runtimes.python-xpu]
-devices = ["/dev/null"]
-venv_volume = false
+image = "my/xpu:1"
+devices = ["/dev/dri/renderD128"]
+venv_volume = true
 ''')
-        self.assertEqual(cfg['runtimes']['base']['image'], 'my/base:1')
-        self.assertEqual(cfg['runtimes']['python-xpu']['devices'], ['/dev/null'])
-        self.assertFalse(cfg['runtimes']['python-xpu']['venv_volume'])
+        self.assertEqual(cfg['runtimes']['python-xpu']['image'], 'my/xpu:1')
+        self.assertEqual(cfg['runtimes']['python-xpu']['devices'], ['/dev/dri/renderD128'])
+        self.assertTrue(cfg['runtimes']['python-xpu']['venv_volume'])
+        self.assertEqual(cli.selected_runtime(None, cfg), 'python-xpu')
 
     def test_rejects_bad_runtime_configuration(self):
         bad_cases = [
@@ -74,6 +78,7 @@ venv_volume = false
     def test_command_mounts_any_runtime_device_not_just_python_xpu(self):
         cfg = self.load_text('''
 [sandbox]
+default_runtime = "node"
 shared_tools = false
 [runtimes.node]
 image = "example/node:22"

@@ -32,6 +32,9 @@ install -d -m 755 "$BIN" "$LIB" "$DATA" "$DATA/libexec" "$CONFIG/apps" \
 install -m 755 "$ROOT/bin/sandbox" "$BIN/sandbox"
 # Always install the generic Python environment manager into the shared tools mount.
 install -m 755 "$ROOT/tools/sandbox-py" "$DATA/tools/bin/sandbox-py"
+# These paths contain installer-managed program resources, not user state.
+# Replace instead of overlaying, so deleted compatibility code cannot linger.
+rm -rf -- "$LIB/sandboxlib" "$DATA/images" "$DATA/libexec/sandboxlib"
 cp -a "$ROOT/libexec/sandboxlib" "$LIB/"
 cp -a "$ROOT/images" "$DATA/"
 cp -a "$ROOT/libexec/sandboxlib" "$DATA/libexec/"
@@ -110,6 +113,8 @@ Installed sandbox into:
   $DATA/tool-installers
   $CONFIG/recipes (trusted host-side setup recipes)
   $CONFIG
-Existing config and denylist were preserved.
+Existing config, denylist, recipes, tools and sandboxes were preserved.
+Existing config files must be migrated manually if they contain removed keys.
+Run: sandbox runtimes
 Ensure $BIN is in PATH.
 EOF

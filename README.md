@@ -8,6 +8,8 @@
 
 ## Quick start
 
+**Upgrading from an earlier sandbox archive?** First migrate your existing `config.toml` using the [one-time migration guide](docs/migration.md). This release intentionally rejects older keys instead of translating them automatically. Existing named sandboxes and their volumes can normally remain untouched.
+
 Requirements: Linux, Python 3.11+, Git, Docker CLI + BuildKit, and a working **rootless Docker daemon**. Set up rootless Docker according to [the official guide](https://docs.docker.com/engine/security/rootless/).
 
 ```bash
@@ -85,6 +87,8 @@ Recipes live in `~/.config/sandbox/recipes` and can access host resources. Only 
 - [Quick start and lifecycle](docs/quickstart.md)
 - [Add your own Docker runtime](docs/runtimes.md)
 - [Configuration reference](docs/configuration.md)
+- [One-time migration from earlier configurations](docs/migration.md)
+- [Safe uninstall and optional complete cleanup](docs/uninstall.md)
 - [Architecture and storage model](docs/architecture.md)
 - [Security and privacy limitations](docs/security.md)
 - [Development and testing](docs/development.md)

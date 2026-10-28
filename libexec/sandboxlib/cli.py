@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
@@ -13,7 +13,7 @@ import uuid
 from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
-from .settings import IMAGES, read_only_mounts, load
+from .settings import read_only_mounts, load
 
 
 def call(args, *, capture=False, env=None):
@@ -124,7 +124,7 @@ def check_container(image, repo, deny, extras):
 
 def command_create(args, cfg):
     docker_rootless()
-    preparer_id = inspect_image(cfg['images']['preparer'])
+    preparer_id = inspect_image(cfg['preparer']['image'])
     source = source_repo(args.source)
     deny = denylist_path(args.denylist) if args.anonymize else None
     private_dir(instances_dir())
@@ -167,34 +167,21 @@ def command_inspect(args, cfg):
     print(json.dumps(meta, indent=2))
 
 
-def image_profile(runtime):
-    if runtime not in ('base', 'python-xpu'):
-        raise ValueError('runtime must be base or python-xpu')
-    return runtime
-
-
 def runtime_definition(runtime, cfg):
-    profiles = cfg.get('runtimes')
-    if profiles is not None:
-        if runtime not in profiles:
-            raise ValueError(f'unknown runtime {runtime!r}; see sandbox runtimes')
-        return profiles[runtime]
-    # Older test fixtures and external callers use the legacy config shape.
-    if runtime not in ('base', 'python-xpu'):
-        raise ValueError(f'unknown runtime {runtime!r}')
-    return {
-        'image': cfg.get('images', IMAGES)[runtime], 'shell': '/bin/bash',
-        'devices': cfg.get('gpu_devices', []) if runtime == 'python-xpu' else [],
-        'venv_volume': cfg.get('venv_volume', True),
-        'dockerfile': None, 'context': None,
-    }
+    try:
+        return cfg['runtimes'][runtime]
+    except KeyError as exc:
+        raise ValueError(f'unknown runtime {runtime!r}; see sandbox runtimes') from exc
+
+
+def selected_runtime(value, cfg):
+    return value if value is not None else cfg['default_runtime']
 
 
 def command_runtimes(args, cfg):
     profiles = cfg.get('runtimes', {})
     for name, entry in sorted(profiles.items()):
-        buildable = ('built-in' if name in ('base', 'python-xpu') and not entry['dockerfile']
-                     else 'configured' if entry['dockerfile'] else 'external')
+        buildable = 'configured' if entry['dockerfile'] else 'external'
         print(f'{name:<20} {entry["image"]:<40} {buildable}')
 
 
@@ -264,10 +251,6 @@ def runtime_args(path, meta, cfg, runtime, command):
         name = volume_name(meta, suffix)
         remember_volume(meta, path, name)
         args += ['--mount', f'type=volume,src={name},dst={dest}']
-    # Backward compatibility: reuse OpenCode state from an older sandbox version.
-    legacy_state = volume_name(meta, 'opencode')
-    if legacy_state in meta.get('volumes', []):
-        args += ['--mount', f'type=volume,src={legacy_state},dst=/root/.local/share/opencode']
     for device in definition['devices']:
         if not Path(device).is_char_device():
             raise ValueError('runtime device is missing or not a character device: ' + device)
@@ -287,7 +270,7 @@ def runtime_args(path, meta, cfg, runtime, command):
 
 def recipes_directory(cfg):
     """Host-owned scripts only; never read recipes from the sandbox repository."""
-    raw = cfg.get('setup', {}).get('recipes_dir', '~/.config/sandbox/recipes')
+    raw = cfg['setup']['recipes_dir']
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise ValueError('setup.recipes_dir must be an absolute path or start with ~')
@@ -315,14 +298,14 @@ def recipe_script(cfg, recipe):
     return path
 
 
-def apply_setup(name, recipe, cfg, *, force=False, yes=False, runtime="base"):
+def apply_setup(name, recipe, cfg, *, force=False, yes=False, runtime=None):
     path, meta = load_instance(name)
     script = recipe_script(cfg, recipe)
     completed = meta.get('setup_recipes', {})
     if recipe in completed and not force:
         print(f'Setup {recipe} already applied to {name}; use --force to run again.')
         return False
-    if cfg.get('setup', {}).get('confirm_host_execution', True) and not yes:
+    if cfg['setup']['confirm_host_execution'] and not yes:
         print(f'Host-side setup script: {script}')
         print(f'Target sandbox: {name}; this script may access host credentials.')
         if not sys.stdin.isatty():
@@ -335,7 +318,7 @@ def apply_setup(name, recipe, cfg, *, force=False, yes=False, runtime="base"):
     env = os.environ.copy()
     env.update(SANDBOX_NAME=name,
                SANDBOX_CLI=str(Path.home() / '.local/bin/sandbox'),
-               SANDBOX_RUNTIME=runtime,
+               SANDBOX_RUNTIME=selected_runtime(runtime, cfg),
                SANDBOX_TOOLS_DIR=str(resource_dir() / 'tools'))
     subprocess.run([str(script), name], check=True, env=env)
     # Only record success, so a failed import can be retried normally.
@@ -361,19 +344,20 @@ def command_setup(args, cfg):
     if args.recipe is None:
         raise ValueError('usage: sandbox setup NAME RECIPE')
     docker_rootless()
-    apply_setup(args.name, args.recipe, cfg, force=args.force, yes=args.yes, runtime=args.runtime)
+    apply_setup(args.name, args.recipe, cfg, force=args.force, yes=args.yes, runtime=selected_runtime(args.runtime, cfg))
 
 
 def command_run(args, cfg):
     path, meta = load_instance(args.name)
     docker_rootless()
     for recipe in args.setup:
-        apply_setup(args.name, recipe, cfg, force=args.force_setup, yes=args.yes, runtime=args.runtime)
+        apply_setup(args.name, recipe, cfg, force=args.force_setup, yes=args.yes, runtime=selected_runtime(args.runtime, cfg))
     # Reload after host-side recipes complete; they may update sandbox metadata.
     path, meta = load_instance(args.name)
     try:
-        shell = runtime_definition(args.runtime, cfg)['shell']
-        subprocess.run(runtime_args(path, meta, cfg, args.runtime, [shell]), check=True)
+        runtime = selected_runtime(args.runtime, cfg)
+        shell = runtime_definition(runtime, cfg)['shell']
+        subprocess.run(runtime_args(path, meta, cfg, runtime, [shell]), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -384,7 +368,7 @@ def command_exec(args, cfg):
     if not args.command:
         raise ValueError('expected command after --')
     try:
-        subprocess.run(runtime_args(path, meta, cfg, args.runtime, args.command), check=True)
+        subprocess.run(runtime_args(path, meta, cfg, selected_runtime(args.runtime, cfg), args.command), check=True)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode)
 
@@ -417,6 +401,17 @@ def command_destroy(args, cfg):
 
 
 def resolve_build_path(spec):
+    # bundled: addresses files installed by sandbox rather than user locations.
+    if spec.startswith('bundled:'):
+        tail = spec[len('bundled:'):]
+        subpath = PurePosixPath(tail)
+        if subpath.is_absolute() or '..' in subpath.parts:
+            raise ValueError('bundled build path must stay within installed resources')
+        root = resource_dir().resolve(strict=True)
+        path = (root / tail).resolve(strict=True)
+        if not path.is_relative_to(root):
+            raise ValueError('bundled build path must stay within installed resources')
+        return path
     path = Path(spec).expanduser()
     if not path.is_absolute():
         path = config_dir() / path
@@ -427,7 +422,7 @@ def command_build(args, cfg):
     docker_rootless()
     image = args.image
     if image == 'preparer':
-        tag = cfg['images']['preparer']
+        tag = cfg['preparer']['image']
         context = resource_dir()
         dockerfile = context / 'images/preparer/Dockerfile'
     else:
@@ -437,9 +432,6 @@ def command_build(args, cfg):
             dockerfile = resolve_build_path(definition['dockerfile'])
             context = (resolve_build_path(definition['context']) if definition['context']
                        else dockerfile.parent)
-        elif image in ('base', 'python-xpu'):
-            context = resource_dir()
-            dockerfile = context / 'images' / image / 'Dockerfile'
         else:
             raise ValueError(f'runtime {image!r} has no Dockerfile; build its image externally '
                              'or set runtimes.' + image + '.dockerfile')
@@ -474,7 +466,7 @@ def parser():
     info.set_defaults(handler=command_inspect)
     run = sub.add_parser('run', help='launch an interactive shell in a sandbox')
     run.add_argument('name')
-    run.add_argument('--runtime', default='base')
+    run.add_argument('--runtime', default=None)
     run.add_argument('--setup', action='append', default=[], metavar='RECIPE',
                      help='apply trusted host setup recipe before starting')
     run.add_argument('--force-setup', action='store_true', help='reapply an already completed recipe')
@@ -484,12 +476,12 @@ def parser():
     setup.add_argument('name', help='sandbox name, or list')
     setup.add_argument('recipe', nargs='?', help='recipe name')
     setup.add_argument('--force', action='store_true', help='reapply a completed recipe')
-    setup.add_argument('--runtime', default='base')
+    setup.add_argument('--runtime', default=None)
     setup.add_argument('--yes', action='store_true', help='confirm host script execution')
     setup.set_defaults(handler=command_setup)
     exe = sub.add_parser('exec', help='execute a command in an ephemeral container')
     exe.add_argument('name')
-    exe.add_argument('--runtime', default='base')
+    exe.add_argument('--runtime', default=None)
     exe.set_defaults(handler=command_exec)
     imp = sub.add_parser('import', help='make host review branches from sandbox commits')
     imp.add_argument('name')
