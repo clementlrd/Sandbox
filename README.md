@@ -34,6 +34,24 @@ sandbox create ai-work ~/projects/my-repo --anonymize
 sandbox run ai-work
 ```
 
+If an intentional reference (for example your copyright name in `LICENSE`)
+blocks the denylist scan, you can opt out **explicitly** when creating the
+sandbox:
+
+```bash
+sandbox create ai-work ~/projects/my-repo --anonymize --skip-denylist
+sandbox run ai-work
+```
+
+This still rewrites historical Git authors/committers and checks for unexpected
+Git remotes, but it **does not check file contents or history for personal
+information**. The setting persists for that sandbox and is displayed in
+`sandbox list` and `sandbox inspect`. For an existing anonymized sandbox,
+`sandbox run ai-work --skip-denylist` (or
+`sandbox exec ai-work --skip-denylist -- COMMAND`) bypasses the scan for that invocation only.
+Use this only when you accept exposing any names or secrets left in files.
+
+
 The source repository must be clean at creation. `sandbox import` creates *review branches* in the original repository—it never merges or pushes. Commit changes inside the sandbox before importing. `sandbox destroy` removes the sandbox workspace and its named volumes, including application authentication and virtual environments.
 
 ## Runtime images
@@ -100,20 +118,6 @@ sandbox run experiment --setup opencode-openai
 ```
 
 Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**, and must be reviewed before use. See [Configuration](docs/configuration.md) and [Security](docs/security.md).
-
-## Check before publishing
-
-Use your private denylist to scan the repository's working files, paths, Git
-history, and stored Git objects **before pushing it to GitHub**:
-
-```bash
-sandbox audit . --denylist ~/.config/sandbox/denylist.txt
-```
-
-It reports matching term numbers rather than printing the sensitive terms and
-exits nonzero on a match. This is a *literal-term check*, not a general-purpose
-secret scanner; binary files can also produce false positives. Review the
-[publication checklist](docs/publication-checklist.md) for other checks.
 
 ## Documentation
 

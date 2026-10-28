@@ -9,7 +9,10 @@ from .common import git, git_env, git_text
 from .preflight import scan
 
 
-def prepare(source: Path, dest: Path, anonymize: bool, denylist: Path | None):
+def prepare(source: Path, dest: Path, anonymize: bool, denylist: Path | None,
+            skip_denylist: bool = False):
+    if skip_denylist and not anonymize:
+        raise ValueError('--skip-denylist requires --anonymize')
     env = git_env()
     source, dest = source.resolve(strict=True), dest.resolve(strict=True)
     if any(dest.iterdir()):
@@ -67,9 +70,7 @@ def prepare(source: Path, dest: Path, anonymize: bool, denylist: Path | None):
     shutil.rmtree(stage)
     shutil.rmtree(dest / 'template')
     if anonymize:
-        if denylist is None:
-            raise ValueError('anonymization requires a denylist')
-        scan(repo, denylist)
+        scan(repo, denylist, skip_denylist=skip_denylist)
     print('PREPARED: ' + ('anonymized' if anonymize else 'independent') + ' repository')
 
 
@@ -80,6 +81,8 @@ def main():
     a.add_argument('--source', default='/source')
     a.add_argument('--output', default='/output')
     a.add_argument('--anonymize', action='store_true')
+    a.add_argument('--skip-denylist', action='store_true',
+                   help='skip content screening while retaining Git identity/remote checks')
     a.add_argument('--denylist', default='/private/denylist.txt')
     c = sub.add_parser('check')
     c.add_argument('--repo', default='/workspace')
@@ -88,7 +91,8 @@ def main():
     args = parser.parse_args()
     if args.command == 'prepare':
         prepare(Path(args.source), Path(args.output), args.anonymize,
-                Path(args.denylist) if args.anonymize else None)
+                Path(args.denylist) if args.anonymize and not args.skip_denylist else None,
+                skip_denylist=args.skip_denylist)
     else:
         scan(Path(args.repo), Path(args.denylist), [Path(x) for x in args.extra])
 

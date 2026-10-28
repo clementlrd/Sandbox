@@ -1,4 +1,4 @@
-"""Fail-closed screening for sandbox preparation and host publication audits."""
+"""Fail-closed screening for prepared anonymized sandbox repositories."""
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -10,33 +10,41 @@ CHUNK = 1024 * 1024
 MAX_REPORT = 25
 
 
-def scan(repo: Path, denylist: Path, extra_paths=(), enforce_identity=True,
-         require_no_remotes=True):
+def scan(repo: Path, denylist: Path | None, extra_paths=(), skip_denylist=False):
     repo = Path(repo).resolve(strict=True)
-    denylist = Path(denylist).resolve(strict=True)
+    if not skip_denylist:
+        if denylist is None:
+            raise ValueError('denylist required unless --skip-denylist is set')
+        denylist = Path(denylist).resolve(strict=True)
     if not (repo / '.git').is_dir():
         raise ValueError('expected a working Git repository with a .git directory')
-    if repo in denylist.parents or denylist == repo:
-        raise ValueError('denylist must not be mounted inside the sandbox')
-    if not denylist.is_file():
-        raise ValueError('missing denylist')
+    if not skip_denylist:
+        if repo in denylist.parents or denylist == repo:
+            raise ValueError('denylist must not be mounted inside the sandbox')
+        if not denylist.is_file():
+            raise ValueError('missing denylist')
     if repo.joinpath('.git/objects/info/alternates').exists():
         raise ValueError('Git object alternates are prohibited')
-    needles = [t.strip().casefold() for t in denylist.read_text(encoding='utf-8').splitlines()
-               if t.strip() and not t.lstrip().startswith('#')]
-    if not needles:
-        raise ValueError('denylist has no active entries; refusing scan')
+    if not skip_denylist:
+        needles = [t.strip().casefold() for t in denylist.read_text(encoding='utf-8').splitlines()
+                   if t.strip() and not t.lstrip().startswith('#')]
+        if not needles:
+            raise ValueError('denylist has no active entries; refusing scan')
     env = git_env()
-    if require_no_remotes:
-        remotes = subprocess.check_output(['git', '-C', str(repo), 'remote'], env=env)
-        if remotes.strip():
-            raise ValueError('sandbox repository must not have configured Git remotes')
-    if enforce_identity:
-        raw = subprocess.check_output(['git', '-C', str(repo), 'log', '--all',
-             '--format=%an%x00%ae%x00%cn%x00%ce'], env=env)
-        for line in raw.splitlines():
-            if line.split(b'\0') != [b'Sandbox', b'sandbox@invalid', b'Sandbox', b'sandbox@invalid']:
-                raise ValueError('a reachable commit has a non-synthetic author or committer')
+    remotes = subprocess.check_output(['git', '-C', str(repo), 'remote'], env=env)
+    if remotes.strip():
+        raise ValueError('sandbox repository must not have configured Git remotes')
+    raw = subprocess.check_output(['git', '-C', str(repo), 'log', '--all',
+         '--format=%an%x00%ae%x00%cn%x00%ce'], env=env)
+    for line in raw.splitlines():
+        if line.split(b'\0') != [b'Sandbox', b'sandbox@invalid', b'Sandbox', b'sandbox@invalid']:
+            raise ValueError('a reachable commit has a non-synthetic author or committer')
+    if skip_denylist:
+        # Keep the Git-identity, remote and alternates checks above. Do not
+        # inspect source/file contents when the user explicitly opts out.
+        print('WARNING: denylist content scan skipped; Git identity and remote checks passed',
+              file=sys.stderr)
+        return
     hits = 0
     def detected(idx, kind, place):
         nonlocal hits

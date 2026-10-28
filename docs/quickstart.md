@@ -67,6 +67,22 @@ The source Git repository must be clean (no untracked/uncommitted changes) and h
 
 For anonymization, add one private denylist term per line to `~/.config/sandbox/denylist.txt` (mode `0600`) and create with `--anonymize`. The preparer rewrites commit identities in a network-disabled container, saves the original/anonymous commit mapping *outside* the agent mount, and checks denylist terms before launching the application. This is **best-effort**, not total anonymization.
 
+If a known intentional identifier (such as your name in `LICENSE`) causes
+a false-positive for your workflow, you can explicitly opt out:
+
+```bash
+sandbox create agent /absolute/path/to/repo --anonymize --skip-denylist
+sandbox run agent
+# For already-created anonymized environments, bypass only this execution:
+sandbox run existing-agent --skip-denylist
+```
+
+`--skip-denylist` on `create` is stored in the sandbox metadata and remains
+active on subsequent launches. The same flag on `run` or `exec` is temporary.
+The Git identity rewrite and structural Git checks remain active, but **no
+content screening takes place**; source files or historical commit messages can
+still reveal identifying information. This is not a privacy guarantee.
+
 ## Run commands
 
 ```bash

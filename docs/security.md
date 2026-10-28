@@ -45,3 +45,17 @@ The current CLI runs containers as UID 0 inside the *rootless user namespace*, s
 Before a broad public release, review at least: filesystem mount target collisions, symlink traversal, Git configuration/hooks/filters, import/update-ref safety, historical and non-text leaks, denial-of-service resource exhaustion, race conditions in setup/destroy, credential handling (stdin/temporary files), downloaded binary verification, third-party Dockerfile build contexts, and the behavior of rootless device mappings. Run container-based end-to-end tests rather than relying solely on mocks.
 
 References: [Docker rootless mode](https://docs.docker.com/engine/security/rootless/), [Docker rootless limitations](https://docs.docker.com/engine/security/rootless/troubleshoot/).
+
+## Explicit denylist bypass
+
+`create --anonymize --skip-denylist` is an **opt-out from content screening**
+that persists for the named sandbox. `run --skip-denylist` and
+`exec --skip-denylist` bypass only the specified invocation. The Git history
+rewrite is still performed on creation, and launch still rejects unexpected
+Git remotes, non-synthetic reachable commit authors/committers, and object
+alternates. **It does not check source files, history blobs, skills, mount
+contents, or filenames for sensitive strings.** A copyright name in a license
+will still be visible to the agent, and other secrets may be present too.
+
+Use strict checking by default; bypass it only when you explicitly accept
+that disclosure. This is deliberately not a silent fallback on scan failures.

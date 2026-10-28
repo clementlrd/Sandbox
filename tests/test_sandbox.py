@@ -96,6 +96,86 @@ class GitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'denylist match'):
             preflight.scan(other, self.denylist, [skills])
 
+    def test_publication_audit_is_not_a_cli_command(self):
+        # Contributor authorship is legitimate; denylist is a sandbox preflight.
+        with self.assertRaises(SystemExit):
+            cli.parser().parse_args(['audit', '.'])
+
+    def test_denylist_bypass_does_not_bypass_git_checks(self):
+        # This is a typical legitimate case: the LICENSE contains your name.
+        # The source is already synthetically authored, so only the content
+        # is a denylist violation.
+        cmd(self.original, 'config', 'user.name', 'Sandbox')
+        cmd(self.original, 'config', 'user.email', 'sandbox@invalid')
+        commit(self.original, 'license', filename='LICENSE',
+               content='Copyright Real Person', extra=self.anon)
+        with self.assertRaisesRegex(ValueError, 'denylist match'):
+            preflight.scan(self.original, self.denylist)
+        preflight.scan(self.original, None, skip_denylist=True)
+        cmd(self.original, 'remote', 'add', 'origin', 'https://example.org/repo.git')
+        with self.assertRaisesRegex(ValueError, 'must not have configured Git remotes'):
+            preflight.scan(self.original, None, skip_denylist=True)
+        cmd(self.original, 'remote', 'remove', 'origin')
+        commit(self.original, 'identity failure', filename='extra.txt',
+               content='safe')  # Real Person? local git config is synthetic.
+        # Introduce an actual real-identity commit with env overrides.
+        real = dict(GIT_AUTHOR_NAME='Real Person', GIT_AUTHOR_EMAIL='real@example.invalid',
+                    GIT_COMMITTER_NAME='Real Person', GIT_COMMITTER_EMAIL='real@example.invalid')
+        commit(self.original, 'real identity', filename='real.txt',
+               content='safe', extra=real)
+        with self.assertRaisesRegex(ValueError, 'non-synthetic'):
+            preflight.scan(self.original, None, skip_denylist=True)
+
+    def test_skip_denylist_creation_and_runtime_args(self):
+        from sandboxlib import settings
+        commit(self.original, 'initial')
+        cfg = settings.DEFAULT.copy()
+        cfg['preparer'] = {'image': 'sandbox/preparer:v1'}
+        cfg['runtimes'] = {'base': {'image': 'sandbox/base:v1', 'shell': '/bin/bash',
+                                  'venv_volume': False, 'devices': [],
+                                  'dockerfile': None, 'context': None}}
+        cfg['mounts'] = []
+        cfg['shared_tools'] = False
+        state = self.root / 'state' / 'instances'
+        args = type('Args', (), {'name': 'licensed', 'source': str(self.original),
+                                  'anonymize': True, 'denylist': None,
+                                  'skip_denylist': True})()
+        def fake_prepare(image, source, dest, anonymize, deny, *, skip_denylist=False):
+            self.assertTrue(anonymize)
+            self.assertTrue(skip_denylist)
+            self.assertIsNone(deny)
+            # Simulated clean rewritten output, without git-filter-repo dependency.
+            prepworker.prepare(source, dest, False, None)
+            repo = dest / 'repo'
+            # Local test commit is rewritten by forcing the identity for a
+            # fresh commit in the sandbox and dropping the original ancestor.
+            cmd(repo, 'checkout', '--orphan', 'anonymous')
+            cmd(repo, 'add', '-A')
+            cmd(repo, 'commit', '-m', 'anonymous baseline', extra=self.anon)
+            cmd(repo, 'branch', '-D', 'main')
+            cmd(repo, 'branch', '-m', 'main')
+            cmd(repo, 'reflog', 'expire', '--expire=now', '--all')
+            cmd(repo, 'gc', '--prune=now')
+        with mock.patch.object(cli, 'docker_rootless'), \
+             mock.patch.object(cli, 'inspect_image', return_value='sha256:' + '1' * 64), \
+             mock.patch.object(cli, 'instances_dir', return_value=state), \
+             mock.patch.object(cli, 'prepare_container', side_effect=fake_prepare):
+            cli.command_create(args, cfg)
+            path, meta = cli.load_instance('licensed')
+        self.assertTrue(meta['anonymized'])
+        self.assertTrue(meta['skip_denylist'])
+        self.assertIsNone(meta['denylist'])
+        with mock.patch.object(cli, 'pinned_image', return_value='sha256:' + 'b'*64), \
+             mock.patch.object(cli, 'remember_volume'), \
+             mock.patch.object(cli, 'check_container') as checker:
+            cli.runtime_args(path, meta, cfg, 'base', ['sh'])
+        checker.assert_not_called()
+        self.assertTrue(cli.parser().parse_args(['run', 'licensed', '--skip-denylist']).skip_denylist)
+        self.assertTrue(cli.parser().parse_args(['exec', 'licensed', '--skip-denylist']).skip_denylist)
+        with self.assertRaisesRegex(ValueError, 'requires --anonymize'):
+            cli.command_create(type('Args', (), {'name': 'wrong', 'source': str(self.original),
+                'anonymize': False, 'denylist': None, 'skip_denylist': True})(), cfg)
+
     def test_import_preserves_agent_merge_and_branches(self):
         a = commit(self.original, 'A', content='a')
         b = commit(self.original, 'B', content='b')
@@ -134,9 +214,10 @@ class GitTests(unittest.TestCase):
         cfg['runtimes'] = {'base': {'image':'sandbox/base:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}, 'python-xpu': {'image':'sandbox/python-xpu:v1', 'shell':'/bin/bash', 'venv_volume':True, 'devices':[], 'dockerfile':None, 'context':None}}
         state = self.root / 'state' / 'instances'
         args = type('Args', (), {'name': 'test-01', 'source': str(self.original),
-                                  'anonymize': False, 'denylist': None})()
-        def fake_prepare(image, source, dest, anonymize, deny):
+                                  'anonymize': False, 'denylist': None, 'skip_denylist': False})()
+        def fake_prepare(image, source, dest, anonymize, deny, *, skip_denylist=False):
             self.assertFalse(anonymize)
+            self.assertFalse(skip_denylist)
             prepworker.prepare(source, dest, False, None)
         with mock.patch.object(cli, 'docker_rootless'), \
              mock.patch.object(cli, 'inspect_image', return_value='sha256:' + 'a' * 64), \

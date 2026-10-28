@@ -50,6 +50,6 @@ python -m unittest discover -s tests -v
 To validate behavior that CI cannot cover, use a rootless Linux Docker daemon
 and follow [Development and testing](development.md#reproduce-manually-on-linux).
 
-For publication safety, also run `sandbox audit . --denylist PATH` on your **own
-host**. It scans personal denylist terms against historical objects and local
-Git metadata; this intentionally does not run on GitHub's hosted runners.
+Before making a repository public, independently review the committed content
+and history for secrets. The sandbox's denylist preflight serves anonymized
+runtime preparation; it is not a publication or contributor-name check.
