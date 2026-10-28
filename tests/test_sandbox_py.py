@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -64,9 +65,13 @@ dependencies = ["torch>=2.0", "rich>=13"]
         sandbox_py.write_state(env, data)
         (env / sandbox_py.CONSTRAINT_NAME).write_text('torch==2.14.0+xpu\n')
         args = sandbox_py.parser().parse_args(['init', 'project', '--project', str(self.project)])
+        def write_report(argv, **kwargs):
+            if '--report' in argv:
+                Path(argv[argv.index('--report') + 1]).write_text('{"install": []}')
+
         with mock.patch.object(sandbox_py, 'VENV_ROOT', self.root / 'venvs'), \
              mock.patch.object(sandbox_py, 'check_base'), \
-             mock.patch.object(sandbox_py, 'run') as run:
+             mock.patch.object(sandbox_py, 'run', side_effect=write_report) as run:
             sandbox_py.command_init(args)
         call = run.call_args.args[0]
         self.assertEqual(call[:3], [env / 'bin/python', '-m', 'pip'])
@@ -75,6 +80,84 @@ dependencies = ["torch>=2.0", "rich>=13"]
         self.assertIn('rich>=13', call)
         self.assertNotIn('-e', call)
         self.assertNotIn('--upgrade', call)
+
+    def test_empty_init_without_project_metadata(self):
+        args = sandbox_py.parser().parse_args(['init', 'plain', '--empty',
+                                               '--project', str(self.project)])
+        with mock.patch.object(sandbox_py, 'ensure_env') as ensure, \
+             mock.patch.object(sandbox_py, 'install_packages') as install:
+            sandbox_py.command_init(args)
+        ensure.assert_called_once_with(sandbox_py.VENV_ROOT / 'plain', self.project)
+        install.assert_not_called()
+
+    def test_missing_project_prompt_accept_decline_and_noninteractive(self):
+        args = sandbox_py.parser().parse_args(['init', 'plain', '--project', str(self.project)])
+        with mock.patch.object(sandbox_py.sys.stdin, 'isatty', return_value=True), \
+             mock.patch('builtins.input', return_value='yes'), \
+             mock.patch.object(sandbox_py, 'ensure_env') as ensure:
+            sandbox_py.command_init(args)
+            ensure.assert_called_once()
+        with mock.patch.object(sandbox_py.sys.stdin, 'isatty', return_value=True), \
+             mock.patch('builtins.input', return_value=''), \
+             mock.patch.object(sandbox_py, 'ensure_env') as ensure:
+            with self.assertRaisesRegex(ValueError, 'cancelled'):
+                sandbox_py.command_init(args)
+            ensure.assert_not_called()
+        with mock.patch.object(sandbox_py.sys.stdin, 'isatty', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'use --empty'):
+                sandbox_py.command_init(args)
+
+    def test_empty_init_rejects_project_extras(self):
+        args = sandbox_py.parser().parse_args(['init', 'plain', '--empty', '--extra', 'dev'])
+        with self.assertRaisesRegex(ValueError, '--empty cannot be combined'):
+            sandbox_py.command_init(args)
+
+    def test_repeated_init_reads_changed_dependencies(self):
+        args = sandbox_py.parser().parse_args(['init', 'plain', '--project', str(self.project)])
+        with mock.patch.object(sandbox_py, 'ensure_env', return_value={'base_torch': None}), \
+             mock.patch.object(sandbox_py, 'check_base'), \
+             mock.patch.object(sandbox_py, 'install_packages') as install:
+            for requirement in ('requests>=2.31', 'requests>=2.32'):
+                (self.project / 'pyproject.toml').write_text(
+                    f'[project]\ndependencies = ["{requirement}"]\n')
+                sandbox_py.command_init(args)
+                self.assertEqual(install.call_args.args[2], [requirement])
+
+    def test_install_requirements_and_packages(self):
+        args = sandbox_py.parser().parse_args(['install', 'plain', 'requests',
+                                               '-r', 'requirements.txt',
+                                               '--requirement', 'dev.txt'])
+        with mock.patch.object(sandbox_py, 'state_for', return_value={'base_torch': None}), \
+             mock.patch.object(sandbox_py, 'check_base'), \
+             mock.patch.object(sandbox_py, 'run') as run:
+            sandbox_py.command_install(args)
+        self.assertEqual(run.call_args.args[0][-5:],
+                         ['requests', '-r', 'requirements.txt', '-r', 'dev.txt'])
+        args = sandbox_py.parser().parse_args(['install', 'plain', '-r', 'requirements.txt'])
+        self.assertEqual(args.packages, [])
+
+    def test_install_requires_a_target(self):
+        args = sandbox_py.parser().parse_args(['install', 'plain'])
+        with mock.patch.object(sandbox_py, 'state_for', return_value={'base_torch': None}), \
+             mock.patch.object(sandbox_py, 'check_base'), \
+             mock.patch.object(sandbox_py, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'provide package requirements'):
+                sandbox_py.command_install(args)
+            run.assert_not_called()
+
+    def test_refuses_torch_install_before_changing_environment(self):
+        def write_report(argv, **kwargs):
+            Path(argv[argv.index('--report') + 1]).write_text(
+                '{"install": [{"metadata": {"name": "torch", "version": "2.14.0+xpu"}}]}')
+
+        with mock.patch.object(sandbox_py, 'constraint_flags', return_value=['-c', 'constraints.txt']), \
+             mock.patch.object(sandbox_py, 'run', side_effect=write_report) as run:
+            with self.assertRaisesRegex(ValueError, 'refusing to install PyTorch'):
+                sandbox_py.install_packages(self.root, {'base_torch': '2.14.0+xpu'},
+                                            ['-r', 'requirements.txt'])
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('--dry-run', run.call_args.args[0])
+        self.assertIn('constraints.txt', run.call_args.args[0])
 
     def test_refuses_to_install_to_unknown_environment(self):
         args = sandbox_py.parser().parse_args(['install', 'missing', 'numpy'])
@@ -116,6 +199,30 @@ dependencies = ["torch>=2.0", "rich>=13"]
                                  text=True, env=env)
         self.assertNotEqual(blocked.returncode, 0)
         self.assertFalse((Path(child_info['site']) / 'torch').exists())
+        # Exercise the helper's real pip preflight, including an explicit wheel
+        # forced wheel reinstall that would shadow the inherited pinned version.
+        data = {'base_torch': version}
+        (child / sandbox_py.CONSTRAINT_NAME).write_text(f'torch=={version}\n')
+        requirements = self.root / 'requirements.txt'
+        requirements.write_text('torch>=2.0\n')
+        sandbox_py.install_packages(child, data, ['-r', str(requirements)], env=env)
+        requirements.write_text('torch>=3\n')
+        with self.assertRaises(subprocess.CalledProcessError):
+            sandbox_py.install_packages(child, data, ['-r', str(requirements)], env=env)
+        wheel = self.root / 'torch-2.14.0+xpu-py3-none-any.whl'
+        with zipfile.ZipFile(wheel, 'w') as archive:
+            archive.writestr('torch/__init__.py', '')
+            archive.writestr('torch-2.14.0+xpu.dist-info/METADATA',
+                             'Metadata-Version: 2.1\nName: torch\nVersion: 2.14.0+xpu\n')
+            archive.writestr('torch-2.14.0+xpu.dist-info/WHEEL',
+                             'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+            archive.writestr('torch-2.14.0+xpu.dist-info/RECORD', '')
+        requirements.write_text(str(wheel) + '\n')
+        sandbox_py.install_packages(child, data, ['-r', str(requirements)], env=env)
+        with self.assertRaisesRegex(ValueError, 'refusing to install PyTorch'):
+            sandbox_py.install_packages(child, data,
+                                        ['--force-reinstall', '-r', str(requirements)], env=env)
+        self.assertFalse((Path(child_info['site']) / 'torch').exists())
 
     def test_sandbox_py_creates_inherited_env_without_runtime_helper(self):
         """Real venv creation inherits base torch without a sandbox-venv binary."""
@@ -152,7 +259,11 @@ dependencies = ["torch>=2.0", "rich>=13"]
         with mock.patch.object(sandbox_py, 'VENV_ROOT', venvs), \
              mock.patch.object(sandbox_py, 'BASE_PYTHON', self.root / 'missing-python'):
             path = sandbox_py.venv_path('plain')
-            state = sandbox_py.ensure_env(path, self.project)
+            args = sandbox_py.parser().parse_args(['init', 'plain', '--empty',
+                                                   '--project', str(self.project)])
+            sandbox_py.command_init(args)
+            sandbox_py.command_init(args)
+            state = sandbox_py.state_for(path)
         self.assertIsNone(state['base_torch'])
         self.assertTrue((path / 'bin/python').is_file())
         self.assertFalse((path / sandbox_py.CONSTRAINT_NAME).exists())

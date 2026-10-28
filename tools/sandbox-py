@@ -2,7 +2,7 @@
 """Manage persistent per-sandbox Python venvs without replacing base torch.
 
 Runs *inside* a sandbox, where /opt/venvs is a Docker volume. No uv or
-custom dependency solver: pip resolves requirements from pyproject.toml.
+custom dependency solver: pip resolves project and package requirements.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 VENV_ROOT = Path('/opt/venvs')
@@ -163,6 +164,22 @@ def constraint_flags(path, data):
     return []
 
 
+def install_packages(path, data, targets, **kwargs):
+    command = [path / 'bin/python', '-m', 'pip', 'install', '--upgrade-strategy',
+               'only-if-needed', *constraint_flags(path, data), *targets]
+    if data.get('base_torch'):
+        # A version constraint alone cannot prevent reinstalling/shadowing the
+        # same torch version (for example through a direct wheel requirement).
+        with tempfile.TemporaryDirectory(prefix='sandbox-py-') as directory:
+            report = Path(directory) / 'report.json'
+            run([*command, '--dry-run', '--report', report], **kwargs)
+            planned = json.loads(report.read_text(encoding='utf-8'))
+            if any(item['metadata']['name'].lower() == 'torch'
+                   for item in planned['install']):
+                error('refusing to install PyTorch: use the runtime installation')
+    run(command, **kwargs)
+
+
 def get_project_requirements(project, extras, groups):
     """Read only top-level requirements; leave resolution to pip."""
     source = project / 'pyproject.toml'
@@ -205,11 +222,25 @@ def get_project_requirements(project, extras, groups):
 def command_init(args):
     path = venv_path(args.name)
     project = Path(args.project).expanduser().resolve(strict=True)
+    if args.empty and (args.extra or args.group):
+        error('--empty cannot be combined with --extra or --group')
+    empty = args.empty
+    if not empty and not (project / 'pyproject.toml').is_file():
+        if args.extra or args.group:
+            error('--extra and --group require pyproject.toml')
+        if not sys.stdin.isatty():
+            error(f'no pyproject.toml in {project}; use --empty to create an empty environment')
+        answer = input('No pyproject.toml found. Create an empty virtual environment? [y/N] ')
+        if answer.strip().lower() not in ('y', 'yes'):
+            error('environment initialization cancelled')
+        empty = True
+    if empty:
+        ensure_env(path, project)
+        print(f'Environment: {path}\nUse: {path}/bin/python')
+        return
     conf, reqs = get_project_requirements(project, args.extra, args.group)
     data = ensure_env(path, project)
     check_base(path, data)
-    python = path / 'bin/python'
-    flags = constraint_flags(path, data)
     # Install the package itself when a build backend is declared. Many uv-only
     # applications have pyproject.toml but no build-system: install their PEP 621
     # requirements directly, letting pip do ALL dependency resolution.
@@ -230,8 +261,7 @@ def command_init(args):
         targets.extend(reqs)
         print('No build backend declared: installing declared dependencies, not the project itself.')
     if targets:
-        run([python, '-m', 'pip', 'install', '--upgrade-strategy', 'only-if-needed',
-             *flags, *targets], cwd=project)
+        install_packages(path, data, targets, cwd=project)
     else:
         print('No dependencies to install.')
     check_base(path, data)
@@ -245,8 +275,12 @@ def command_install(args):
     for value in args.packages:
         if value.startswith('-'):
             error('pass package requirements, not pip options')
-    run([path / 'bin/python', '-m', 'pip', 'install', '--upgrade-strategy',
-         'only-if-needed', *constraint_flags(path, data), *args.packages])
+    targets = list(args.packages)
+    for requirement in args.requirement:
+        targets.extend(['-r', requirement])
+    if not targets:
+        error('provide package requirements or -r requirements.txt')
+    install_packages(path, data, targets)
     check_base(path, data)
 
 
@@ -261,15 +295,17 @@ def command_check(args):
 def parser():
     p = argparse.ArgumentParser(prog='sandbox-py', description='Persistent Python environments (pip, optional shared base PyTorch)')
     sub = p.add_subparsers(dest='command', required=True)
-    init = sub.add_parser('init', help='create/reuse an environment and install a project')
+    init = sub.add_parser('init', help='create/reuse an environment, optionally installing a project')
     init.add_argument('name')
     init.add_argument('--project', default='.', help='path to project containing pyproject.toml')
+    init.add_argument('--empty', action='store_true', help='create/reuse an environment without installing project dependencies')
     init.add_argument('--extra', action='append', default=[], help='optional project extra (repeatable)')
     init.add_argument('--group', action='append', default=[], help='dependency group, e.g. dev (repeatable)')
     init.set_defaults(callback=command_init)
     install = sub.add_parser('install', help='install extra packages using pip with PyTorch constraint')
     install.add_argument('name')
-    install.add_argument('packages', nargs='+')
+    install.add_argument('packages', nargs='*')
+    install.add_argument('-r', '--requirement', action='append', default=[], help='pip requirements file (repeatable)')
     install.set_defaults(callback=command_install)
     check = sub.add_parser('check', help='check PyTorch inheritance and dependency metadata')
     check.add_argument('name')
@@ -281,7 +317,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         args.callback(args)
-    except (ValueError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (ValueError, OSError, EOFError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f'sandbox-py: {exc}', file=sys.stderr)
         return 1
     return 0

@@ -111,6 +111,20 @@ The example runtime images include `jq` and `tmux` as OS packages. You can use t
 
 `/workspace` holds the persistent independent Git repository. Application data, configuration, and cache have per-sandbox Docker volumes. `/opt/venvs` is optional and isolated by **sandbox and runtime image ID**, so environments made under `base`, `python-xpu`, and `python-cuda` do not get accidentally mixed. `sandbox-py` creates project venvs and installs dependencies from `pyproject.toml` using pip, reusing a base image's PyTorch installation where provided. The helper is mounted through the shared tools directory, not copied into runtime images. It does not consume `uv.lock`.
 
+Inside a Python-capable runtime with `venv_volume = true`:
+
+```bash
+sandbox-py init myenv                  # install from pyproject.toml
+sandbox-py init myenv --empty          # no project metadata needed
+sandbox-py install myenv requests
+sandbox-py install myenv -r requirements.txt
+/opt/venvs/myenv/bin/python script.py
+```
+
+Without `pyproject.toml`, interactive `init` asks whether to create an empty environment; noninteractive use requires `--empty`. Rerun `init` after changing `pyproject.toml`, or `install -r` after changing a requirements file. Both reuse the environment and install versions needed to satisfy the current requirements; request newer versions explicitly (for example, `"requests>=2.32"`). Removed dependencies are not automatically uninstalled. Requirements files can also contain `-e .` to install the project itself.
+
+When runtime PyTorch is inherited, installs are constrained to its version and checked with a pip dry run before installation. Any plan to install another copy of PyTorch—even the same version—is rejected. Manual pip commands bypass these protections.
+
 ## Trusted setup recipes
 
 Use explicit host-side scripts for tasks such as copying browser-authenticated OpenCode credentials into a sandbox:
