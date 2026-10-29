@@ -12,6 +12,7 @@
 | Configured runtime Dockerfile/image | **Trusted input** for the user; the runtime image determines code and libraries that execute |
 | Repository | Agent can read/edit/delete the sandbox's independent clone |
 | Shared tools | Host-managed binaries mounted RO, but agent can inspect/read/execute them |
+| Published Python wheels | Explicitly trusted host artifacts; matching runtime profile mounted RO |
 | Persistent app volumes | Writable by the agent, potentially contain OAuth tokens, credentials and sessions |
 
 The Docker socket, host SSH agent and host Git credentials are not mounted by default. The *original repository* is visible only to the preparation container. Agents get a prepared repository with no original remote configured. None of this prevents network uploads; unrestricted outbound networking lets an agent send code elsewhere, including with HTTP GET queries.
@@ -36,6 +37,21 @@ A non-anonymized sandbox still has an independent Git repository but **preserves
 Setup recipes under `~/.config/sandbox/recipes` run **on the host** after explicit confirmation; never copy an untrusted repo recipe there without review. User-provided Dockerfiles may execute arbitrary build instructions. `[[mounts]]` can expose host information; they are intentionally read-only, but **are not checked** by the one-time repository denylist scan and their content is visible to the agent.
 
 Avoid mounts containing secrets, host SSH keys, browser profiles, Docker sockets, private home directories or writable shared binaries. Sharing a Docker socket with an agent typically destroys the intended isolation boundary.
+
+## Python artifacts and environment checks
+
+Writable uv caches remain private to each sandbox/image. The optional shared
+wheel store is host-managed and mounted read-only; no sandbox can automatically
+publish artifacts for another sandbox or the host to execute. Publishing a wheel
+explicitly trusts its code and its claimed runtime compatibility. Filename and
+metadata checks do not prove provenance, CUDA ABI compatibility, or harmlessness.
+
+Managed Python commands check dependency/distribution metadata and reject
+runtime package replacement. They are mistake guards, not enforcement against
+arbitrary commands in a writable environment. They do not inspect every source
+file or prevent an agent from invoking other installers. Private hardlink-based
+cache reuse means installed files must not be modified in place. See
+[Python limitations](python.md#current-limits).
 
 ## Credentials
 

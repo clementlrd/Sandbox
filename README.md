@@ -109,21 +109,21 @@ You can also specify a Dockerfile and build context for `sandbox build NAME`. Pr
 
 The example runtime images include `jq` and `tmux` as OS packages. You can use these or any other programs directly from the shell; there is no application-profile machinery. Note that a `tmux` server stops when its ephemeral container exits.
 
-`/workspace` holds the persistent independent Git repository. Application data, configuration, and cache have per-sandbox Docker volumes. `/opt/venvs` is optional and isolated by **sandbox and runtime image ID**, so environments made under `base`, `python-xpu`, and `python-cuda` do not get accidentally mixed. `sandbox-py` creates project venvs and installs dependencies from `pyproject.toml` using pip, reusing a base image's PyTorch installation where provided. The helper is mounted through the shared tools directory, not copied into runtime images. It does not consume `uv.lock`.
+`/workspace` holds the persistent independent Git repository. Application state has per-sandbox Docker volumes. `/opt/venvs` is isolated by **sandbox and runtime image ID**, so environments under different runtime images do not get mixed. The host-managed `sandbox-py` helper uses **uv** for automatic project environments, reusing the image's PyTorch and its Python dependencies without copying them.
 
 Inside a Python-capable runtime with `venv_volume = true`:
 
 ```bash
-sandbox-py init myenv                  # install from pyproject.toml
-sandbox-py init myenv --empty          # no project metadata needed
-sandbox-py install myenv requests
-sandbox-py install myenv -r requirements.txt
-/opt/venvs/myenv/bin/python script.py
+sandbox-py add requests                # edit project dependencies and safely install
+sandbox-py run python script.py        # automatically create/sync/select the environment
+sandbox-py status                     # explain runtime, protected packages and storage
 ```
 
-Without `pyproject.toml`, interactive `init` asks whether to create an empty environment; noninteractive use requires `--empty`. Rerun `init` after changing `pyproject.toml`, or `install -r` after changing a requirements file. Both reuse the environment and install versions needed to satisfy the current requirements; request newer versions explicitly (for example, `"requests>=2.32"`). Removed dependencies are not automatically uninstalled. Requirements files can also contain `-e .` to install the project itself.
+No activation, environment name, CUDA suffix, or separate initialization is required. `pyproject.toml` is required. If present, `uv.lock` must be current and compatible with the runtime; `sync` never silently rewrites it. Extras/groups selected with `sync --extra NAME --group NAME` are remembered. Development groups are otherwise opt-in.
 
-When runtime PyTorch is inherited, installs are constrained to its version and checked with a pip dry run before installation. Any plan to install another copy of PyTorch—even the same version—is rejected. Manual pip commands bypass these protections.
+Managed updates prepare a replacement environment and switch only after validation. Runtime packages cannot be replaced, even by a same-version wheel. Third-party source builds are disabled in this first iteration: use a compatible trusted wheel or custom runtime instead. The original `init NAME`, `install NAME`, and `check NAME` pip interface remains available for existing named/scratch environments, with its original, narrower torch-only protection.
+
+**Storage:** uv's writable cache stays private to each sandbox/image and shares eligible files with its environments using hardlinks. A host-managed immutable wheel store supports read-only reuse across containers, with exact-image profiles and content deduplication. Publishing wheels is an explicit trust decision, not automatic export of sandbox-produced code. Whole-system writable-cache sharing and automatic native build/publication are **not** implemented. See [Python environments and cache reuse](docs/python.md) for setup, limitations and upgrade instructions.
 
 ## Trusted setup recipes
 
@@ -148,6 +148,7 @@ Recipes live in `~/.config/sandbox/recipes/`, execute with **host permissions**,
 
 - [Installation and lifecycle](docs/quickstart.md)
 - [Custom runtimes, CUDA/XPU, and build caching](docs/runtimes.md)
+- [Managed Python environments and cache reuse](docs/python.md)
 - [Configuration reference](docs/configuration.md)
 - [Architecture and persistence](docs/architecture.md)
 - [Security and privacy limitations](docs/security.md)

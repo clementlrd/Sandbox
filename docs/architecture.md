@@ -59,6 +59,18 @@ exposing sensitive host content to an agent.
 
 Application data is **not tied to a runtime**: one sandbox's app volumes are shared by its `base`, `python-xpu`, `python-cuda`, and custom runtimes. Python venv volumes **are tied to the exact image ID**, because interpreter paths and native package ABIs are generally not portable between images. Distinct profiles that reference the same image ID may share that venv volume.
 
+Managed Python environments use uv, with a private cache on that venv volume
+and automatic per-project environment generations. Runtime packages are
+inherited, not copied, and validated against the image's Python inventory.
+Successful updates atomically select a validated generation; managed runs lease
+their generation while executing. The legacy named pip environments remain
+separate. See [Python environments](python.md).
+
+Host-published wheels live under the resource directory's `python-wheels/`.
+Containers receive only the matching full-image-ID profile, read-only at
+`/opt/sandbox/wheels`. The host's writable uv cache is never shared. Publication
+is an explicit host trust decision, not automatic collection of sandbox output.
+
 ## Import
 
 `import` is a **host-side** action; no authenticated push or remote access is given to the agent. It fetches objects from the prepared local repository into a temporary ref namespace, translates original ancestors using the commit map and re-creates new commit objects using the host's configured Git identity. Multiple branch heads are imported under `refs/heads/sandbox/NAME/` for deliberate review. It does not change the source checkout or perform a merge or push.
@@ -72,6 +84,6 @@ No importer can infer uncommitted work from a Git commit graph. Commit intended 
 ## Operational boundaries
 
 - `sandbox` deliberately does not manage application-specific process profiles or auto-run setup recipes. Enter the shell or use `exec`.
-- Runtime images can be supplied by users; the core knows no programming language or GPU brand.
+- Runtime images can be supplied by users; launching does not special-case runtime names or GPU brands. Python environment/artifact helpers are optional.
 - Optional host recipes are a deliberate **privileged-on-host extension point**, distinct from the container runtime.
 - Build actions are explicit. Changing the source repo cannot invalidate a built-in runtime image layer, because source is not used as a Docker build context.

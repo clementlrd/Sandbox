@@ -42,7 +42,7 @@ class RuntimeProfiles(unittest.TestCase):
         self.assertIn('nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04', dockerfile)
         self.assertIn("'torch==2.9.1'", dockerfile)
         self.assertIn('/opt/venv', dockerfile)
-        self.assertIn('--mount=type=cache,target=/root/.cache/pip', dockerfile)
+        self.assertIn('--mount=type=cache,target=/root/.cache/uv', dockerfile)
         self.assertNotIn('sandbox-venv', dockerfile)
         xpu_dockerfile = (project / 'images/python-xpu/Dockerfile').read_text()
         self.assertNotIn('sandbox-venv', xpu_dockerfile)

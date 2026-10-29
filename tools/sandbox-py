@@ -1,27 +1,51 @@
 #!/usr/bin/env python3
-"""Manage persistent per-sandbox Python venvs without replacing base torch.
-
-Runs *inside* a sandbox, where /opt/venvs is a Docker volume. No uv or
-custom dependency solver: pip resolves project and package requirements.
-"""
+"""Managed uv environments, plus the original named pip environment interface."""
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
+import hashlib
 from importlib import metadata
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
+import zipfile
 
 VENV_ROOT = Path('/opt/venvs')
 STATE_NAME = '.sandbox-python.json'
 CONSTRAINT_NAME = 'torch-constraints.txt'
 NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
 BASE_PYTHON = Path('/opt/venv/bin/python')
+RUNTIME_MANIFEST = Path('/opt/sandbox/python.json')
+MANAGED_VERSION = 1
+
+# Keep the probe independent of installed Python packages (and do not import torch).
+RUNTIME_PROBE = '''import json, sys, sysconfig, platform
+from importlib import metadata
+packages = {}
+for dist in metadata.distributions():
+    name = dist.metadata.get('Name')
+    if name:
+        import re
+        name = re.sub(r'[-_.]+', '-', name).lower()
+        if name in packages:
+            continue  # Match metadata.distribution(): the first sys.path entry wins.
+        packages[name] = {'version': dist.version,
+                          'metadata': dist.read_text('METADATA') or dist.read_text('PKG-INFO'),
+                          'site': str(dist.locate_file('').resolve())}
+print(json.dumps({'version': 1, 'python': sys.version,
+                  'platform': sysconfig.get_platform(),
+                  'implementation': platform.python_implementation(),
+                  'site': sysconfig.get_paths()['purelib'], 'packages': packages}))
+'''
 
 
 def error(message):
@@ -292,9 +316,470 @@ def command_check(args):
     print(f'OK: {path}' + (f' reuses PyTorch {data["base_torch"]}' if data.get('base_torch') else ''))
 
 
+def normalized(name):
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+def runtime_contract():
+    # Nested `sandbox-py run` invocations may execute this helper with a project
+    # venv's Python. Never turn that disposable generation into the base runtime.
+    base = (BASE_PYTHON if BASE_PYTHON.is_file() else
+            Path(getattr(sys, '_base_executable', sys.executable)).resolve())
+    result = subprocess.run([str(base), '-I', '-c', RUNTIME_PROBE], check=True,
+                            capture_output=True, text=True, env=uv_environment())
+    contract = json.loads(result.stdout)
+    if RUNTIME_MANIFEST.is_file():
+        recorded = json.loads(RUNTIME_MANIFEST.read_text())
+        if recorded != contract:
+            error('runtime Python differs from its image manifest; rebuild the runtime')
+    elif not BASE_PYTHON.is_file():
+        # A generic system Python is an interpreter, not an inherited package stack.
+        contract['packages'] = {}
+    contract['base_python'] = str(base)
+    contract['image'] = os.environ.get('SANDBOX_RUNTIME_IMAGE', 'external')
+    return contract
+
+
+def managed_project(raw):
+    project = Path(raw).expanduser().resolve(strict=True)
+    if not (project / 'pyproject.toml').is_file():
+        error('managed commands require pyproject.toml; use init NAME --empty for a scratch environment')
+    conf = tomllib.loads((project / 'pyproject.toml').read_text())
+    tool = conf.get('tool', {})
+    if not isinstance(tool, dict) or not isinstance(tool.get('uv', {}), dict):
+        error('tool.uv must be a TOML table')
+    if tool.get('uv', {}).get('workspace') is not None:
+        error('managed uv workspaces are not supported yet; use a standalone project')
+    return project, conf
+
+
+def managed_root(project):
+    if not VENV_ROOT.is_dir():
+        error('/opt/venvs is not mounted; enable venv_volume in sandbox config')
+    key = hashlib.sha256(str(project).encode()).hexdigest()[:24]
+    root = VENV_ROOT / '.managed' / key
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+@contextlib.contextmanager
+def file_lock(path, *, shared=False, nonblocking=False):
+    with path.open('a+') as handle:
+        flags = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        if nonblocking:
+            flags |= fcntl.LOCK_NB
+        fcntl.flock(handle, flags)
+        yield
+
+
+def uv_environment():
+    # Do not allow inherited installer overrides to defeat the managed contract.
+    allowed = {'UV_OFFLINE', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL',
+               'UV_EXTRA_INDEX_URL', 'UV_FIND_LINKS', 'UV_NATIVE_TLS', 'UV_KEYRING_PROVIDER'}
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(('PIP_', 'UV_')) or k in allowed or
+           (k.startswith('UV_INDEX_') and k.endswith(('_USERNAME', '_PASSWORD')))}
+    env.update(UV_CACHE_DIR=str(VENV_ROOT / '.uv-cache'), UV_LINK_MODE='hardlink',
+               UV_PYTHON_DOWNLOADS='never', UV_NO_PROGRESS='1')
+    artifacts = os.environ.get('SANDBOX_PYTHON_WHEELS')
+    if artifacts:
+        # This path is provided by the host launcher as a read-only image profile.
+        env['UV_FIND_LINKS'] = artifacts + (' ' + env['UV_FIND_LINKS'] if env.get('UV_FIND_LINKS') else '')
+    env.pop('VIRTUAL_ENV', None)
+    env.pop('PYTHONPATH', None)
+    env.pop('PYTHONHOME', None)
+    return env
+
+
+def uv_command(*args, project, env):
+    uv = shutil.which('uv')
+    if not uv:
+        error('uv is missing from this runtime; rebuild a bundled image or install uv in your custom image')
+    try:
+        run([uv, '--quiet', *args], cwd=project, env=env)
+    except subprocess.CalledProcessError as exc:
+        error(f'uv {args[0]} failed (exit {exc.returncode}); see the error above. '
+              'The active managed environment was not modified.')
+
+
+def input_digest(project, contract, extras, groups):
+    digest = hashlib.sha256()
+    digest.update(json.dumps({'contract': contract, 'extras': sorted(extras),
+                              'groups': sorted(groups), 'format': MANAGED_VERSION,
+                              'installer_env': {k: v for k, v in uv_environment().items()
+                                                if k.startswith('UV_')}}, sort_keys=True).encode())
+    # Local dependency metadata can live below the root. Source code itself stays
+    # editable; a changed dependency declaration must invalidate the resolution.
+    names = {'pyproject.toml', 'uv.lock', 'uv.toml', 'setup.py', 'setup.cfg', '.python-version'}
+    for directory, dirs, files in os.walk(project):
+        dirs[:] = sorted(d for d in dirs if d not in {'.git', '.venv', '__pycache__', 'node_modules'})
+        for name in sorted(names.intersection(files)):
+            path = Path(directory) / name
+            digest.update(str(path.relative_to(project)).encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def contract_wheels(root, contract):
+    """Metadata-only resolver inputs. These MUST NEVER be installed.
+
+    Direct-URL constraints preserve version conflicts, unlike uv overrides. They
+    let resolution use the runtime's real metadata without downloading torch.
+    """
+    directory = root / 'runtime-metadata'
+    directory.mkdir()
+    urls = {}
+    for name, package in sorted(contract['packages'].items()):
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name) or
+                not re.fullmatch(r'[A-Za-z0-9_.+!\-]+', package['version']) or
+                not isinstance(package['metadata'], str)):
+            error(f'cannot represent runtime package {name}; rebuild its distribution metadata')
+        stem = name.replace('-', '_') + '-' + package['version']
+        wheel = directory / (stem + '-py3-none-any.whl')
+        with zipfile.ZipFile(wheel, 'w') as archive:
+            archive.writestr(stem + '.dist-info/METADATA', package['metadata'])
+            archive.writestr(stem + '.dist-info/WHEEL',
+                             'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+            archive.writestr(stem + '.dist-info/RECORD', '')
+        urls[name] = wheel.as_uri()
+    constraints = root / 'runtime-constraints.txt'
+    constraints.write_text(''.join(f'{name} @ {url}\n' for name, url in urls.items()))
+    baseline = root / 'runtime-requirements.in'
+    baseline.write_text(''.join(name + '\n' for name in urls))
+    return constraints, baseline, urls
+
+
+def strip_runtime_requirements(resolved, urls):
+    remaining = []
+    seen = set()
+    for line in resolved.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.match(r'^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[.*?\])?\s*(.*)$', line)
+        if not match:
+            error('unexpected resolver output; refusing to install')
+        name, requirement = normalized(match[1]), match[2]
+        if name in urls:
+            if requirement.strip() != '@ ' + urls[name]:
+                error(f'project would replace runtime package {name}; choose a compatible runtime')
+            seen.add(name)
+        else:
+            remaining.append(line)
+    if seen != set(urls):
+        error('resolution omitted protected runtime packages; refusing to install')
+    return '\n'.join(remaining) + '\n'
+
+
+def exported_requirements(text, protected, *, hashes):
+    """Keep lockfile hashes for installation, but not metadata-only resolution."""
+    records = []
+    pending = ''
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        pending += ' ' + line.removesuffix('\\').strip()
+        if line.endswith('\\'):
+            continue
+        match = re.match(r'^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[.*?\])?\s*[=@<>!~;]', pending)
+        if not match:
+            error('unsupported uv.lock export entry; refusing to install')
+        if not hashes:
+            records.append(re.sub(r'\s+--hash=\S+', '', pending).strip())
+        elif normalized(match[1]) not in protected:
+            records.append(pending.strip())
+        pending = ''
+    if pending:
+        error('incomplete uv.lock export')
+    return '\n'.join(records) + '\n'
+
+
+def validate_generation(generation, contract, env):
+    python = generation / 'bin/python'
+    result = subprocess.run([str(python), '-I', '-c', RUNTIME_PROBE], check=True,
+                            text=True, capture_output=True, env=env)
+    observed = json.loads(result.stdout)
+    for name, expected in contract['packages'].items():
+        if observed['packages'].get(name) != expected:
+            error(f'runtime package {name} is shadowed or changed; run sandbox-py sync --rebuild')
+    snapshot = generation / '.sandbox-packages.json'
+    if snapshot.exists() and json.loads(snapshot.read_text()) != observed:
+        error('managed environment changed outside sandbox-py; run sandbox-py sync --rebuild')
+    # uv pip check does not see distributions inherited through our .pth file.
+    # Resolve the *observed* metadata offline, with no candidates other than the
+    # installed versions. This checks the combined stack without installing it.
+    with tempfile.TemporaryDirectory(prefix='check-', dir=generation) as directory:
+        check = Path(directory)
+        constraints, baseline, _ = contract_wheels(check, observed)
+        uv_command('pip', 'compile', baseline, '-c', constraints, '--python', python,
+                   '--no-index', '--no-build', '--no-cache', '-o', check / 'checked.txt',
+                   project=generation, env=env)
+    return observed
+
+
+def current_generation(root):
+    pointer = root / 'current'
+    if not pointer.is_symlink():
+        return None
+    generation = pointer.resolve(strict=True)
+    if generation.parent != root or not generation.name.startswith('env-'):
+        error('invalid managed environment pointer')
+    return generation
+
+
+def prune_generations(root, keep):
+    for generation in root.glob('env-*'):
+        if generation in keep or generation.is_symlink() or not generation.is_dir():
+            continue
+        try:
+            with file_lock(generation / '.lease', nonblocking=True):
+                shutil.rmtree(generation)
+        except BlockingIOError:
+            pass  # A managed run still uses this generation.
+
+
+def sync_managed(project, conf, root, *, extras, groups, rebuild=False):
+    contract = runtime_contract()
+    env = uv_environment()
+    fingerprint = input_digest(project, contract, extras, groups)
+    current = current_generation(root)
+    if current and not rebuild:
+        state = json.loads((current / '.sandbox-managed.json').read_text())
+        if state['fingerprint'] == fingerprint:
+            validate_generation(current, contract, env)
+            previous = root / state['previous'] if state.get('previous') else None
+            prune_generations(root, {current, previous})
+            return current, contract, env
+    generation = root / ('env-' + uuid.uuid4().hex)
+    generation.mkdir()
+    print('Preparing and validating project Python environment...', file=sys.stderr)
+    try:
+        uv_command('venv', '--python', contract['base_python'], generation, project=project, env=env)
+        python = generation / 'bin/python'
+        if contract['packages']:
+            info = py_info(python)
+            sites = dict.fromkeys([contract['site']] + [p['site'] for p in contract['packages'].values()])
+            (Path(info['site']) / 'sandbox-runtime.pth').write_text('\n'.join(sites) + '\n')
+        constraints, baseline, urls = contract_wheels(generation, contract)
+        if (project / 'uv.lock').is_file():
+            source = generation / 'locked.in'
+            locked_export = generation / 'locked-export.txt'
+            export = ['export', '--locked', '--python', contract['base_python'],
+                      '--no-default-groups', '--no-emit-project',
+                      '--no-editable', '--output-file', locked_export]
+            for extra in extras:
+                export += ['--extra', extra]
+            for group in groups:
+                export += ['--group', group]
+            uv_command(*export, project=project, env=env)
+            source.write_text(exported_requirements(locked_export.read_text(), urls, hashes=False))
+            selection = []
+        else:
+            source = project / 'pyproject.toml'
+            selection = [value for extra in extras for value in ('--extra', extra)]
+            selection += [value for group in groups for value in ('--group', group)]
+        resolved = generation / 'resolved.txt'
+        if current and not (project / 'uv.lock').is_file():
+            # uv treats an existing output as version preferences, not hard
+            # constraints. Adding one dependency must not upgrade every other
+            # package just because newer wheels have appeared in an index.
+            shutil.copyfile(current / 'install.txt', resolved)
+        uv_command('pip', 'compile', source, baseline, '--constraint', constraints,
+                   '--python', python, '--no-build', '--no-header', '--no-annotate',
+                   '--output-file', resolved, *selection, project=project, env=env)
+        install = generation / 'install.txt'
+        filtered = strip_runtime_requirements(resolved.read_text(), urls)
+        hashed = (project / 'uv.lock').is_file()
+        install.write_text(exported_requirements(locked_export.read_text(), urls, hashes=True)
+                           if hashed else filtered)
+        entries = [line for line in install.read_text().splitlines() if line.strip()]
+        require_hashes = bool(entries) and all('--hash=' in line for line in entries)
+        uv_command('pip', 'install', '--python', python, '--no-build', '--no-deps',
+                   '-r', install, *(['--require-hashes'] if require_hashes else []), project=project, env=env)
+        if 'build-system' in conf:
+            # Only the project itself may build. Do not cache its build across
+            # arbitrary local compiler/environment changes.
+            uv_command('pip', 'install', '--python', python, '--no-deps', '--no-cache',
+                       '-e', str(project), project=project, env=env)
+        observed = validate_generation(generation, contract, env)
+        (generation / '.sandbox-packages.json').write_text(json.dumps(observed, sort_keys=True))
+        (generation / '.sandbox-managed.json').write_text(json.dumps(
+            {'fingerprint': fingerprint, 'project': str(project), 'contract': contract,
+             'extras': extras, 'groups': groups,
+             'previous': current.name if current else None}, sort_keys=True))
+        if input_digest(project, contract, extras, groups) != fingerprint:
+            error('dependency inputs changed during installation; retry sandbox-py sync')
+        pointer = root / 'next'
+        pointer.unlink(missing_ok=True)
+        pointer.symlink_to(generation.name)
+        os.replace(pointer, root / 'current')
+    except BaseException:
+        # A signal can arrive just after the atomic pointer switch. In that
+        # case the generation is committed and must not be removed.
+        if current_generation(root) != generation:
+            shutil.rmtree(generation)
+        raise
+    # Keep one rollback generation; never remove an environment used by run.
+    prune_generations(root, {generation, current})
+    return generation, contract, env
+
+
+def managed_selection(args, root):
+    current = current_generation(root)
+    saved = json.loads((current / '.sandbox-managed.json').read_text()) if current else {}
+    return (args.extra if args.extra is not None else saved.get('extras', []),
+            args.group if args.group is not None else saved.get('groups', []))
+
+
+def command_sync(args):
+    project, conf = managed_project(args.project)
+    root = managed_root(project)
+    with file_lock(root / 'lock'):
+        extras, groups = managed_selection(args, root)
+        generation, _, _ = sync_managed(project, conf, root, extras=extras, groups=groups,
+                                         rebuild=args.rebuild)
+    print(f'Environment ready: {generation}\nUse: sandbox-py run python YOUR_SCRIPT.py')
+
+
+def command_managed_run(args):
+    command = args.argv
+    if command[:1] == ['--']:
+        command = command[1:]
+    if not command:
+        error('provide a command, for example sandbox-py run python train.py')
+    project, conf = managed_project(args.project)
+    root = managed_root(project)
+    with contextlib.ExitStack() as stack:
+        with file_lock(root / 'lock'):
+            extras, groups = managed_selection(args, root)
+            generation, _, env = sync_managed(project, conf, root, extras=extras, groups=groups)
+            stack.enter_context(file_lock(generation / '.lease', shared=True))
+        env.update(VIRTUAL_ENV=str(generation), PATH=str(generation / 'bin') + os.pathsep + env.get('PATH', os.defpath))
+        # Keep the lease in this parent while the command runs.
+        code = subprocess.run(command, cwd=project, env=env).returncode
+        return code if code >= 0 else 128 - code
+
+
+def atomic_bytes(path, contents):
+    temp = path.with_name('.sandbox-py-' + uuid.uuid4().hex)
+    try:
+        temp.write_bytes(contents)
+        temp.chmod(path.stat().st_mode & 0o777 if path.exists() else 0o644)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def command_add(args):
+    project, conf = managed_project(args.project)
+    root = managed_root(project)
+    if any(package.startswith('-') for package in args.packages):
+        error('provide package requirements, not uv options')
+    with file_lock(root / 'lock'):
+        extras, groups = managed_selection(args, root)
+        target_options = []
+        if args.add_group:
+            target_options = ['--group', args.add_group]
+            groups = list(dict.fromkeys([*groups, args.add_group]))
+        elif args.add_extra:
+            target_options = ['--optional', args.add_extra]
+            extras = list(dict.fromkeys([*extras, args.add_extra]))
+        files = [project / 'pyproject.toml', project / 'uv.lock']
+        before = {path: path.read_bytes() if path.exists() else None for path in files}
+        after = None
+        try:
+            # Let uv edit copies first, never the live project. Symlink source
+            # trees into a sibling directory to preserve relative dependencies.
+            contract = runtime_contract()
+            with tempfile.TemporaryDirectory(prefix='.sandbox-py-add-', dir=project.parent) as directory:
+                staged = Path(directory)
+                for child in project.iterdir():
+                    if child in files:
+                        (staged / child.name).write_bytes(before[child])
+                    elif child.name not in {'.git', '.venv'}:
+                        (staged / child.name).symlink_to(child)
+                if before[project / 'uv.lock'] is None:
+                    # No universal lock containing private metadata-only wheels.
+                    uv_command('add', '--frozen', '--raw', '--no-workspace',
+                               '--python', contract['base_python'], *target_options, *args.packages,
+                               project=staged, env=uv_environment())
+                else:
+                    constraints = root / 'add-constraints.txt'
+                    constraints.write_text(''.join(f'{name}=={package["version"]}\n'
+                                                   for name, package in contract['packages'].items()))
+                    uv_command('add', '--no-sync', '--no-build', '--no-workspace',
+                               '--python', contract['base_python'], '-c', constraints,
+                               *target_options, *args.packages, project=staged, env=uv_environment())
+                candidate = {path: (staged / path.name).read_bytes()
+                             if (staged / path.name).exists() else None for path in files}
+                if any((path.read_bytes() if path.exists() else None) != before[path] for path in files):
+                    error('project files changed while adding dependencies; retry')
+                after = candidate
+                for path in files:
+                    if candidate[path] is not None:
+                        atomic_bytes(path, candidate[path])
+            conf = tomllib.loads((project / 'pyproject.toml').read_text())
+            sync_managed(project, conf, root, extras=extras, groups=groups)
+        except BaseException:
+            # Do not overwrite a concurrent editor's changes during rollback.
+            if after is not None:
+                for path in files:
+                    now = path.read_bytes() if path.exists() else None
+                    if now == after[path]:
+                        if before[path] is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            atomic_bytes(path, before[path])
+            raise
+    print('Project dependencies updated. Use: sandbox-py run python YOUR_SCRIPT.py')
+
+
+def command_status(args):
+    project, _ = managed_project(args.project)
+    root = managed_root(project)
+    with file_lock(root / 'lock'):
+        contract = runtime_contract()
+        current = current_generation(root)
+        print(f'Project: {project}\nRuntime image: {contract["image"]}')
+        print(f'Environment: {current or "not synchronized"}')
+        print(f'Private uv cache: {VENV_ROOT / ".uv-cache"}')
+        print(f'Trusted shared wheels: {os.environ.get("SANDBOX_PYTHON_WHEELS", "none published for this image")}')
+        print('Protected runtime packages: ' + (', '.join(
+            f'{name}=={package["version"]}' for name, package in sorted(contract['packages'].items())) or 'none'))
+        print('Third-party source builds: disabled (publish a trusted wheel or use a custom runtime)')
+
+
 def parser():
-    p = argparse.ArgumentParser(prog='sandbox-py', description='Persistent Python environments (pip, optional shared base PyTorch)')
+    p = argparse.ArgumentParser(prog='sandbox-py', description='Persistent Python environments (managed uv; legacy named pip environments)')
     sub = p.add_subparsers(dest='command', required=True)
+    status = sub.add_parser('status', help='show runtime, environment, cache and protected packages')
+    status.add_argument('--project', default='.')
+    status.set_defaults(callback=command_status)
+    for name, callback, help_text in (
+            ('sync', command_sync, 'safely synchronize the automatic project environment'),
+            ('add', command_add, 'add project dependencies and safely synchronize'),
+            ('run', command_managed_run, 'synchronize and run in the automatic environment')):
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument('--project', default='.')
+        if name != 'add':
+            command.add_argument('--extra', action='append', default=None)
+            command.add_argument('--group', action='append', default=None)
+            command.add_argument('--no-extras', dest='extra', action='store_const', const=[],
+                                 help='clear remembered extras')
+            command.add_argument('--no-groups', dest='group', action='store_const', const=[],
+                                 help='clear remembered dependency groups')
+        if name == 'sync':
+            command.add_argument('--rebuild', action='store_true', help='replace a changed or damaged environment')
+        elif name == 'add':
+            command.add_argument('packages', nargs='+')
+            target = command.add_mutually_exclusive_group()
+            target.add_argument('--group', dest='add_group', help='add to and enable a dependency group')
+            target.add_argument('--dev', dest='add_group', action='store_const', const='dev')
+            target.add_argument('--optional', dest='add_extra', help='add to and enable a project extra')
+            command.set_defaults(extra=None, group=None)
+        else:
+            command.add_argument('argv', nargs=argparse.REMAINDER)
+        command.set_defaults(callback=callback)
     init = sub.add_parser('init', help='create/reuse an environment, optionally installing a project')
     init.add_argument('name')
     init.add_argument('--project', default='.', help='path to project containing pyproject.toml')
@@ -316,11 +801,14 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        args.callback(args)
+        result = args.callback(args)
+    except KeyboardInterrupt:
+        print('sandbox-py: interrupted', file=sys.stderr)
+        return 130
     except (ValueError, OSError, EOFError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f'sandbox-py: {exc}', file=sys.stderr)
         return 1
-    return 0
+    return result if isinstance(result, int) else 0
 
 
 if __name__ == '__main__':

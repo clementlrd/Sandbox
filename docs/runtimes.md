@@ -85,7 +85,7 @@ devices = ["/dev/dri/renderD128"]
 
 The launcher exposes only those device nodes via Docker `--device` and adds their numeric host GIDs. This may require extra rootless Docker device/ACL configuration, which varies by host; a GID without a name in `/etc/group` is not necessarily a failure. Device access is **sensitive**: do not expose more host hardware than necessary.
 
-For an ordinary non-Python runtime, use `venv_volume = false` to avoid unnecessary `/opt/venvs` volume creation. A generic runtime doesn't need PyTorch. The `sandbox-py` helper is installed in the shared read-only tools directory. It creates persistent project venvs itself; to inherit a GPU-enabled PyTorch installation, a runtime can provide its base Python environment at `/opt/venv`. No runtime-specific `sandbox-venv` executable is required.
+For an ordinary non-Python runtime, use `venv_volume = false` to avoid unnecessary `/opt/venvs` volume creation. A generic runtime doesn't need PyTorch. The `sandbox-py` helper is installed in the shared read-only tools directory. Its managed `add`, `sync`, and `run` commands require uv and Python 3.11+. To inherit a GPU-enabled Python stack, provide the base environment at `/opt/venv`; all its visible distributions are then protected. Bundled GPU images generate `/opt/sandbox/python.json` with `images/python-contract.py` at build time. No runtime-specific `sandbox-venv` executable is required. See [Python environments](python.md).
 
 ### NVIDIA CUDA and rootless Docker
 
@@ -132,6 +132,11 @@ The `gpus` runtime property is optional and defaults to disabled. It accepts `"a
 ## 5. Caching and disk usage
 
 `docker build` runs with BuildKit and `--progress=plain` by default. Builds are always explicit. BuildKit can reuse unchanged image layers and support cache mounts in your Dockerfile. Choose versioned/digest-pinned base images, place rarely changed package installation steps before source changes, use cache mounts for expensive downloads, and keep the build context small. The Git checkout is **never** copied into the packaged runtime image recipes.
+
+Runtime uv caches live privately on `/opt/venvs`, not in the per-sandbox app
+cache volume, so different images cannot accidentally reuse custom build data.
+They are separate from BuildKit caches. Trusted host-published wheel profiles
+can be reused automatically read-only; see [shared wheels](python.md#reuse-trusted-wheels-across-containers).
 
 ```bash
 sandbox build node                     # normal cached build

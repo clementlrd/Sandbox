@@ -11,7 +11,7 @@ images/python-xpu/             # optional Intel XPU example runtime
 images/python-cuda/            # optional NVIDIA CUDA example runtime
 examples/config.toml           # default config, runtime examples
 recipes/                       # trusted host-side setup scripts
-tools/                         # sandbox-py (venv creation and pip) and optional OpenCode installer
+tools/                         # sandbox-py (managed uv + legacy pip) and optional OpenCode installer
 tests/                         # unit/integration-like local Git tests
 ```
 
@@ -21,11 +21,18 @@ The preparer source is copied into its Docker image. The agent runtime receives 
 
 ```bash
 python -m compileall -q libexec/sandboxlib
+python -m pip install uv==0.9.7
 python -m unittest discover -s tests -v
 bash -n install.sh tools/install-opencode.sh recipes/*.sh
 ```
 
-These tests cover configuration, Git history preparation/import, preflight, CLI argument construction, recipe confirmation and simulated pip reuse. Many tests execute *real local Git* operations. They do **not** launch rootless Docker or exercise a real GPU; those still need a separate integration test on Linux.
+These tests cover configuration, Git preparation/import, preflight, CLI argument
+construction, recipes, legacy pip inheritance, immutable wheel publication, and
+real offline uv resolution/install/run using synthetic wheels. The uv tests skip
+when uv is absent locally; CI installs the pinned version. They do **not** launch
+rootless Docker or exercise a GPU. Those need separate Linux integration tests.
+If your shell exports `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, unset those variables
+for the test invocation: the Git fixtures set their own identities via config.
 
 ## GitHub Actions continuous integration
 

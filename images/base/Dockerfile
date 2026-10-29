@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM ubuntu:24.04
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /usr/local/bin/
 ENV DEBIAN_FRONTEND=noninteractive
 # Keep package downloads in BuildKit's cache; image contains installed packages.
 RUN rm -f /etc/apt/apt.conf.d/docker-clean && \

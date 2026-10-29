@@ -129,7 +129,8 @@ def load():
         dest = PurePosixPath(target)
         if not dest.is_absolute() or '..' in dest.parts or str(dest) == '/':
             raise ValueError('mount target must be an absolute normalized container path')
-        if target.startswith(('/workspace/', '/opt/tools/', '/opt/venvs/')) or target in ('/workspace', '/opt/tools', '/opt/venvs'):
+        reserved = [PurePosixPath(p) for p in ('/workspace', '/opt/tools', '/opt/venvs', '/opt/sandbox')]
+        if any(dest == p or dest.is_relative_to(p) or p.is_relative_to(dest) for p in reserved):
             raise ValueError('mount target conflicts with sandbox-managed paths')
         parsed_mounts.append((source, target, optional))
     obj['mounts'] = parsed_mounts

@@ -6,7 +6,7 @@ From a checkout of the source project:
 ./uninstall.sh
 ```
 
-The default uninstall removes `~/.local/bin/sandbox`, installed Python code, Docker build files, installer scripts and the `sandbox-py` helper installed by the project. It does **not** destroy your named sandboxes, repositories, Docker volumes, config, denylist, recipes, downloaded OpenCode or other host-managed tools, Docker images or build cache. It does not touch your original Git repositories.
+The default uninstall removes `~/.local/bin/sandbox`, installed Python code, Docker build files, installer scripts and the `sandbox-py` helper installed by the project. It does **not** destroy your named sandboxes, repositories, Docker volumes, config, denylist, recipes, downloaded OpenCode or other host-managed tools, published Python wheels, Docker images or build cache. It does not touch your original Git repositories.
 
 If you want a **complete local-data removal**:
 

@@ -3,6 +3,7 @@
 # driver and NVIDIA Container Toolkit configured for ROOTLESS Docker.
 # CUDA 12.6 matches the pinned PyTorch cu126 wheel below.
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /usr/local/bin/
 
 RUN rm -f /etc/apt/apt.conf.d/docker-clean && \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
@@ -15,9 +16,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Store PyTorch in a dedicated base venv (same path as the XPU example),
 # so sandbox-py can reuse it without a second torch install.
 RUN python3 -m venv /opt/venv
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    /opt/venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cu126 \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_LINK_MODE=copy uv pip install --python /opt/venv/bin/python --index-url https://download.pytorch.org/whl/cu126 \
       'torch==2.9.1'
+COPY images/python-contract.py /opt/sandbox/python-contract.py
+RUN /opt/venv/bin/python -I /opt/sandbox/python-contract.py > /opt/sandbox/python.json
 RUN mkdir -p /opt/venvs /workspace
 ENV PATH="/opt/venv/bin:${PATH}"
 WORKDIR /workspace

@@ -14,6 +14,7 @@ from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
 from .settings import read_only_mounts, load
+from . import wheelhouse
 
 
 def call(args, *, capture=False, env=None):
@@ -235,6 +236,13 @@ def runtime_args(path, meta, cfg, runtime, command):
         venv_name = volume_name(meta, 'venvs-' + image.split(':', 1)[1][:12])
         remember_volume(meta, path, venv_name)
         args += ['--mount', f'type=volume,src={venv_name},dst=/opt/venvs']
+        args += ['--env', f'SANDBOX_RUNTIME_IMAGE={image}',
+                 '--env', 'UV_CACHE_DIR=/opt/venvs/.uv-cache',
+                 '--env', 'UV_LINK_MODE=hardlink']
+        artifacts = wheelhouse.profile_dir(image)
+        if artifacts.is_dir():
+            args += ['--mount', mount_spec(artifacts, '/opt/sandbox/wheels', True),
+                     '--env', 'SANDBOX_PYTHON_WHEELS=/opt/sandbox/wheels']
     # Generic, per-sandbox application state, independent of executable/profile.
     for suffix, dest in (
         ('app-data', '/root/.local/share'),
@@ -444,6 +452,21 @@ def command_build(args, cfg):
     call(cmd, env=env)
 
 
+def command_python_cache(args, cfg):
+    if args.cache_action == 'info':
+        root = wheelhouse.store_dir()
+        print(f'Trusted wheel store: {root}')
+        objects = list((root / 'objects').glob('*')) if root.exists() else []
+        print(f'{len(objects)} unique artifacts; {sum(p.stat().st_size for p in objects)} bytes')
+        print('Containers receive read-only, exact-image profiles. No shared writable host uv cache.')
+        return
+    docker_rootless()
+    image = inspect_image(runtime_definition(args.runtime, cfg)['image'])
+    profile = wheelhouse.publish(image, args.wheels)
+    print(f'Published trusted wheels for {args.runtime}: {profile}')
+    print('New containers using this image discover these wheels automatically.')
+
+
 def parser():
     p = argparse.ArgumentParser(prog='sandbox', description='Named isolated Git workspaces (rootless Docker)')
     sub = p.add_subparsers(dest='operation', required=True)
@@ -494,6 +517,14 @@ def parser():
     build.add_argument('--no-cache', action='store_true')
     build.add_argument('--pull', action='store_true')
     build.set_defaults(handler=command_build)
+    cache = sub.add_parser('python-cache', help='inspect or publish trusted reusable Python wheels')
+    cache_sub = cache.add_subparsers(dest='cache_action', required=True)
+    cache_info = cache_sub.add_parser('info', help='show shared artifact storage')
+    cache_info.set_defaults(handler=command_python_cache)
+    publish = cache_sub.add_parser('publish', help='trust and publish host wheels for an exact runtime image')
+    publish.add_argument('--runtime', required=True)
+    publish.add_argument('wheels', nargs='+')
+    publish.set_defaults(handler=command_python_cache)
     return p
 
 
