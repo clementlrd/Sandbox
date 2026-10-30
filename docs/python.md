@@ -143,6 +143,54 @@ versions. Project pins, sources, hashes, and runtime constraints still apply.
 Compatible host environments can consume the profile path printed at publication
 using uv/pip `--find-links`. Do not indiscriminately combine native profiles.
 
+## Proposed next step: install once, reuse compatible builds
+
+**Design note only: automatic building and publication below are not implemented.**
+The goal is to keep one everyday workflow, including for native dependencies:
+
+```bash
+# Host: choose the environment, not individual CUDA package suffixes.
+sandbox run experiment --runtime python-cuda
+
+# Inside the sandbox, from a project with pyproject.toml:
+sandbox-py add requests
+sandbox-py add --dev pytest
+sandbox-py add flash-attn              # proposed automatic native-build support
+sandbox-py run python train.py
+```
+
+For an installation, the proposed manager would:
+
+1. Read the pinned runtime contract and resolve the project without replacing
+   runtime-provided packages. GPU visibility would remain a diagnostic, not a
+   reason to silently switch dependency backends.
+2. Reuse an approved compatible wheel when available. Native build identity must
+   include the source identity, Python ABI, architecture, runtime image, relevant
+   PyTorch/CUDA versions, build dependencies and build options. Initially, exact
+   image IDs would be the conservative reuse boundary.
+3. If no suitable wheel exists and building is authorized, use an isolated
+   builder for the declared target. Missing toolchains or incompatible requirements
+   should produce an actionable error, not an untracked fallback build.
+4. Record the artifact's hash and build provenance. A trusted host-side service
+   would control approval/publication; ordinary sandbox code must not gain write
+   access to shared artifacts or automatically become trusted by other sandboxes.
+   Review/consent policy still needs to be designed.
+5. Install through uv into a replacement environment, validate it, and switch only
+   after success. Later sandboxes using the same approved build profile would
+   reuse the artifact without repeating its build.
+
+Users should not need to capture installation calls, name wheel suffixes, copy
+wheel files, select cache keys, or remember a separate build/publish/install order.
+Publication policy would be configured once, with explicit consent when needed.
+An incompatible request such as `sandbox-py add 'torch>=3'` against a torch 2.x
+runtime should still fail and preserve the working environment.
+
+Until this exists, source-only dependencies require a separately built trusted
+wheel and explicit host publication, or a custom runtime image. Reusing wheel
+artifacts avoids repeated downloads/builds; it does not by itself deduplicate all
+extracted installations across the host and containers. Cross-host/runtime reuse
+beyond the recorded compatibility boundary and storage cleanup need separate work.
+
 ## Current limits
 
 - Automatic third-party source builds/native-build publication are not yet
