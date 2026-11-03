@@ -59,6 +59,26 @@ exposing sensitive host content to an agent.
 
 Application data is **not tied to a runtime**: one sandbox's app volumes are shared by its `base`, `python-xpu`, `python-cuda`, and custom runtimes. Python venv volumes **are tied to the exact image ID**, because interpreter paths and native package ABIs are generally not portable between images. Distinct profiles that reference the same image ID may share that venv volume.
 
+## Additional data
+
+`send NAME SOURCE [DESTINATION]` copies regular files and directories into the
+persistent workspace without Docker. The destination is a directory beneath
+`/workspace`, defaulting to `/workspace`; the source basename is appended.
+Transfers stage privately outside the mounted checkout and publish atomically
+without replacement. Source symlinks and special files are rejected, and
+destination traversal uses no-follow directory descriptors to prevent symlink
+redirection by a running container. File permission bits (excluding special bits)
+are preserved; ownership, timestamps, extended attributes, and directory modes
+are not preserved. This is an artifact transfer, not an archival backup.
+
+`mount NAME SOURCE TARGET [--read-write]` records a canonical host source and a
+container target beneath `/mnt/` in host-only instance metadata. The default is
+read-only. Every subsequent `run`/`exec` validates and binds those sources; missing
+sources and overlapping targets are errors. `mounts` lists saved per-instance
+mappings, and `unmount NAME TARGET` removes one. Configuration changes do not
+modify existing containers. Mount sources are not owned by the sandbox and are
+never deleted by `unmount` or `destroy`.
+
 ## Import
 
 `import` is a **host-side** action; no authenticated push or remote access is given to the agent. It fetches objects from the prepared local repository into a temporary ref namespace, translates original ancestors using the commit map and re-creates new commit objects using the host's configured Git identity. Multiple branch heads are imported under `refs/heads/sandbox/NAME/` for deliberate review. It does not change the source checkout or perform a merge or push.

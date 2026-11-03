@@ -125,6 +125,36 @@ Without `pyproject.toml`, interactive `init` asks whether to create an empty env
 
 When runtime PyTorch is inherited, installs are constrained to its version and checked with a pip dry run before installation. Any plan to install another copy of PyTorch—even the same version—is rejected. Manual pip commands bypass these protections.
 
+## Add artifacts and datasets
+
+```bash
+sandbox send experiment ~/artifacts/chart.png
+sandbox send experiment ~/artifacts /workspace/data
+sandbox mount experiment ~/datasets/training /mnt/training
+sandbox mount experiment ~/outputs /mnt/outputs --read-write
+sandbox mounts experiment
+sandbox unmount experiment /mnt/training
+```
+
+`send` copies a file or directory into `/workspace` (or a destination directory
+beneath it), always appending the source basename. Missing destination directories
+are created. Copies persist and are visible immediately to running containers.
+Existing targets are never overwritten or merged. Symlinks and special files are
+rejected; `.git` cannot be a destination component or the source basename.
+Copies are not automatically committed or Git-ignored.
+
+`mount` saves a per-sandbox host bind mount beneath `/mnt/`. Mounts are **read-only
+by default**; `--read-write` explicitly allows changing host data. Duplicate and
+overlapping targets, including conflicts with configured mounts, are rejected.
+Saved mounts apply to subsequent `run` and `exec` containers, not containers
+already running. `unmount` removes the saved mapping, never the source data;
+destroying a sandbox also leaves mount sources untouched.
+
+Neither operation anonymizes or denylist-scans the data. Container target names
+do not guarantee host-path anonymity: Linux mount metadata may reveal source-path
+information. Use `send` when avoiding live host references matters, and inspect
+file contents and metadata for identifying information before sharing.
+
 ## Trusted setup recipes
 
 Use explicit host-side scripts for tasks such as copying browser-authenticated OpenCode credentials into a sandbox:

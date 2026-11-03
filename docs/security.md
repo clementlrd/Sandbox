@@ -62,3 +62,16 @@ A name in `LICENSE`, historical commit messages or other source data can
 therefore remain visible inside the sandbox. Likewise, any later changes to
 Git identity or remotes are controlled by whoever uses the sandbox, not by
 continuous enforcement.
+## Additional data transfers
+
+`send` and `mount` are explicit host-data disclosures and do not run anonymization
+or denylist checks. Review contents, names, and metadata before sharing. A neutral
+`/mnt/...` target is not an anonymity boundary: Linux mount information can expose
+parts of host paths. Copy with `send` instead if live host references are unwanted.
+
+Per-sandbox mounts are read-only unless `--read-write` is explicitly requested.
+Read-only does not prevent host-side changes from becoming visible inside the
+container. Writable mounts allow sandbox code to modify or delete original host
+data. Avoid broad sources such as your home directory. Nested host mounts can
+have kernel/Docker-dependent read-only semantics; do not assume a read-only bind
+protects every submount on older systems.

@@ -14,6 +14,7 @@ from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
 from .settings import read_only_mounts, load
+from .data import instance_mounts, mount_source, mount_target, overlaps, send
 
 
 def call(args, *, capture=False, env=None):
@@ -165,6 +166,47 @@ def command_inspect(args, cfg):
     print(json.dumps(meta, indent=2))
 
 
+def command_send(args, cfg):
+    path, _ = load_instance(args.name)
+    target = send(path, args.source, args.destination)
+    print(f'Copied to {target}')
+
+
+def command_mount(args, cfg):
+    path, meta = load_instance(args.name)
+    source = mount_source(args.source)
+    target = mount_target(args.target)
+    mounts = instance_mounts(meta)
+    if any(overlaps(target, entry['target']) for entry in mounts):
+        raise ValueError('mount target overlaps an existing sandbox mount')
+    if any(overlaps(target, dest) for _, dest in read_only_mounts(cfg)):
+        raise ValueError('mount target overlaps a configured mount')
+    mounts.append(dict(source=str(source), target=target, read_only=not args.read_write))
+    meta['mounts'] = mounts
+    save_instance(path, meta)
+    print(f'Saved {target} ({"read-write" if args.read_write else "read-only"}); '
+          'applies to subsequent run/exec containers.')
+
+
+def command_mounts(args, cfg):
+    _, meta = load_instance(args.name)
+    for entry in instance_mounts(meta):
+        mode = 'read-only' if entry['read_only'] else 'read-write'
+        print(f'{entry["target"]}\t{mode}\t{entry["source"]}')
+
+
+def command_unmount(args, cfg):
+    path, meta = load_instance(args.name)
+    target = mount_target(args.target)
+    mounts = instance_mounts(meta)
+    remaining = [entry for entry in mounts if entry['target'] != target]
+    if len(remaining) == len(mounts):
+        raise ValueError(f'no sandbox mount at {target}')
+    meta['mounts'] = remaining
+    save_instance(path, meta)
+    print(f'Removed {target}; existing containers and host data are unchanged.')
+
+
 def runtime_definition(runtime, cfg):
     try:
         return cfg['runtimes'][runtime]
@@ -253,6 +295,13 @@ def runtime_args(path, meta, cfg, runtime, command):
                  '--group-add', str(Path(device).stat().st_gid)]
     for source, dest in mounts:
         args += ['--mount', mount_spec(source, dest, True)]
+    for entry in instance_mounts(meta):
+        if any(overlaps(entry['target'], dest) for _, dest in mounts):
+            raise ValueError('sandbox mount overlaps a configured mount')
+        source = mount_source(entry['source'])
+        if str(source) != entry['source']:
+            raise ValueError('sandbox mount source changed; unmount and register it again')
+        args += ['--mount', mount_spec(source, entry['target'], entry['read_only'])]
     for key in cfg['forward_env']:
         if key in os.environ:
             args += ['--env', key]
@@ -462,6 +511,25 @@ def parser():
     info = sub.add_parser('inspect', help='show session metadata')
     info.add_argument('name')
     info.set_defaults(handler=command_inspect)
+    transfer = sub.add_parser('send', help='copy artifacts into the persistent workspace')
+    transfer.add_argument('name')
+    transfer.add_argument('source')
+    transfer.add_argument('destination', nargs='?', default='/workspace',
+                          help='destination directory beneath /workspace (default: /workspace)')
+    transfer.set_defaults(handler=command_send)
+    mount = sub.add_parser('mount', help='save a host mount for subsequent run/exec containers')
+    mount.add_argument('name')
+    mount.add_argument('source')
+    mount.add_argument('target', help='container path beneath /mnt/')
+    mount.add_argument('--read-write', action='store_true', help='allow modifying host data')
+    mount.set_defaults(handler=command_mount)
+    mounts = sub.add_parser('mounts', help='list saved per-sandbox mounts')
+    mounts.add_argument('name')
+    mounts.set_defaults(handler=command_mounts)
+    unmount = sub.add_parser('unmount', help='remove a saved mount without deleting host data')
+    unmount.add_argument('name')
+    unmount.add_argument('target')
+    unmount.set_defaults(handler=command_unmount)
     run = sub.add_parser('run', help='launch an interactive shell in a sandbox')
     run.add_argument('name')
     run.add_argument('--runtime', default=None)
