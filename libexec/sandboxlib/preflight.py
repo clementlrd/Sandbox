@@ -1,16 +1,19 @@
-"""One-time screening of freshly prepared anonymized Git repositories."""
+"""Screen freshly prepared anonymized repositories and incremental transfers."""
 from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from .common import git_env
 
 CHUNK = 1024 * 1024
 MAX_REPORT = 25
 
 
-def scan(repo: Path, denylist: Path | None, *, skip_denylist=False):
+def scan(repo: Path, denylist: Path | None, *, skip_denylist=False,
+         boundaries=None, refnames=()):
+    """With boundaries, screen only incoming history, never existing sandbox work."""
     repo = Path(repo).resolve(strict=True)
     if not skip_denylist:
         if denylist is None:
@@ -34,8 +37,11 @@ def scan(repo: Path, denylist: Path | None, *, skip_denylist=False):
     remotes = subprocess.check_output(['git', '-C', str(repo), 'remote'], env=env)
     if remotes.strip():
         raise ValueError('sandbox repository must not have configured Git remotes')
-    raw = subprocess.check_output(['git', '-C', str(repo), 'log', '--all',
-         '--format=%an%x00%ae%x00%cn%x00%ce'], env=env)
+    revisions = ['--all']
+    if boundaries:
+        revisions += ['--not', *boundaries]
+    raw = subprocess.check_output(['git', '-C', str(repo), 'log',
+          '--format=%an%x00%ae%x00%cn%x00%ce', *revisions], env=env)
     for line in raw.splitlines():
         if line.split(b'\0') != [b'Sandbox', b'sandbox@invalid', b'Sandbox', b'sandbox@invalid']:
             raise ValueError('a reachable commit has a non-synthetic author or committer')
@@ -74,20 +80,38 @@ def scan(repo: Path, denylist: Path | None, *, skip_denylist=False):
                     detected(idx, kind, place)
                     counted.add(idx)
             tail = (tail + block)[-overlap:]
-    proc = subprocess.Popen(['git', '-C', str(repo), 'cat-file', '--batch-all-objects', '--batch'],
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
-    try:
-        assert proc.stdout is not None
-        while header := proc.stdout.readline():
-            oid, kind, size = header.strip().split(b' ', 2)
-            check_stream(proc.stdout, int(size), f'Git {kind.decode()} object', oid.decode())
-            if proc.stdout.read(1) != b'\n':
-                raise ValueError('invalid Git object framing')
-    finally:
-        if proc.stdout:
-            proc.stdout.close()
-    if proc.wait() != 0:
-        raise ValueError('Git object scan failed')
+    for refname in refnames:
+        check_text(refname, 'reference name', '<redacted>')
+    # Creation checks every object, even unreachable ones. Refresh exports only
+    # prepared reachable history, and excludes already-visible mapped ancestry.
+    with tempfile.TemporaryFile(dir=repo.parent) as objects:
+        if boundaries is not None:
+            subprocess.run(['git', '-C', str(repo), 'rev-list', '--objects',
+                            '--no-object-names', *revisions], stdout=objects,
+                           check=True, env=env)
+            objects.seek(0)
+        args = ['git', '-C', str(repo), 'cat-file', '--batch']
+        if boundaries is None:
+            args.append('--batch-all-objects')
+        proc = subprocess.Popen(args, stdin=objects if boundaries is not None else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        try:
+            assert proc.stdout is not None
+            while header := proc.stdout.readline():
+                oid, kind, size = header.strip().split(b' ', 2)
+                check_stream(proc.stdout, int(size), f'Git {kind.decode()} object', oid.decode())
+                if proc.stdout.read(1) != b'\n':
+                    raise ValueError('invalid Git object framing')
+        except BaseException:
+            proc.terminate()
+            proc.wait()
+            raise
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+        status = proc.wait()
+        if status != 0:
+            raise ValueError('Git object scan failed')
 
     def walk(root: Path, label: str):
         if root.is_symlink():
@@ -121,7 +145,18 @@ def scan(repo: Path, denylist: Path | None, *, skip_denylist=False):
                 safe_label = '<redacted>' if any(t in relative.casefold() for t in needles) else relative
                 with item.open('rb') as f:
                     check_stream(f, None, 'file', f'{label}/{safe_label}')
-    walk(repo, 'workspace')
+    if boundaries is None:
+        walk(repo, 'workspace')
+    else:
+        # No checkout is made for refresh. Inspect complete paths in all new
+        # commits, including files deleted again before the incoming tip.
+        commits = subprocess.check_output(['git', '-C', str(repo), 'rev-list',
+                                           *revisions], env=env).splitlines()
+        for commit in commits:
+            paths = subprocess.check_output(['git', '-C', str(repo), 'ls-tree',
+                '-r', '-z', '--name-only', commit.decode('ascii')], env=env)
+            for path in paths.split(b'\0'):
+                check_text(path.decode('utf-8', errors='replace'), 'tracked path', '<redacted>')
     if hits:
-        raise ValueError(f'{hits} denylist match(es); sandbox creation blocked')
-    print(f'PASS: {len(needles)} terms checked against prepared Git objects and workspace')
+        raise ValueError(f'{hits} denylist match(es); repository preparation blocked')
+    print(f'PASS: {len(needles)} terms checked against prepared Git objects and paths')

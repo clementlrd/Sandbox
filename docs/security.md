@@ -27,6 +27,18 @@ the prepared Git objects (including unreachable objects), workspace paths,
 files and symlink targets. This is a **one-time creation check**. The command
 fails before the sandbox is created if this check fails.
 
+`refresh` uses the same trusted Docker preparer for explicit host updates. Original
+host objects remain in private staging; only reachable prepared history is
+exported into the live sandbox. With anonymization enabled, new incoming commit
+identities and content are checked, excluding already-mapped sandbox ancestry.
+Existing sandbox files, custom identities, and remotes are not revalidated.
+Refresh is not a whole-sandbox privacy audit.
+
+Incoming signatures are removed when anonymization or parent translation rewrites
+a commit. The private mapping allows import to reuse the exact original host
+commit, preserving its original authorship and signature, instead of attributing
+a teammate's refreshed work to the current host user.
+
 It does **not** guarantee privacy. Users must consider: personal details in commit messages, names not on the list, zipped/compressed/encrypted/encoded data, images, Git LFS/submodules, files ignored by Git, binary false positives, credentials already persisted in app volumes, runtime tools and their metadata, separately mounted skills/configuration, changes made after creation, and information inferred from historical behavior. The preflight does not scan shared tools or separately configured mounts; it only checks the prepared repository at creation. For strict confidentiality, sanitization needs independent review beyond this best-effort scanner.
 
 A non-anonymized sandbox still has an independent Git repository but **preserves historical identities**. The `--anonymize` option affects creation and cannot be switched later in place.
@@ -57,6 +69,12 @@ prepared repository has no remotes, object alternates or non-synthetic
 reachable commit identities. It is a creation-time switch, **not** a runtime
 permission or a persistent security policy. `run` and `exec` never scan or
 rewrite the repository.
+
+`refresh --skip-denylist` is a separate, explicit per-invocation bypass for an
+anonymized sandbox; creation's bypass is not inherited. It still rewrites new
+incoming identities and validates the prepared export. `refresh --denylist PATH`
+selects a private alternative list for that invocation. These flags cannot be
+combined and are never accepted by `run` or `exec`.
 
 A name in `LICENSE`, historical commit messages or other source data can
 therefore remain visible inside the sandbox. Likewise, any later changes to

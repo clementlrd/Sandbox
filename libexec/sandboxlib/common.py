@@ -41,8 +41,9 @@ def git_env(anonymized=True):
     """Never let preparer processes inherit host Git/SSH configuration."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'SSH_'))}
     env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
-               GIT_CONFIG_SYSTEM='/dev/null', GIT_TERMINAL_PROMPT='0',
-               GIT_LFS_SKIP_SMUDGE='1', GIT_OPTIONAL_LOCKS='0')
+                GIT_CONFIG_SYSTEM='/dev/null', GIT_TERMINAL_PROMPT='0',
+                GIT_LFS_SKIP_SMUDGE='1', GIT_OPTIONAL_LOCKS='0',
+                GIT_NO_REPLACE_OBJECTS='1', GIT_ALLOW_PROTOCOL='file')
     if anonymized:
         env.update(GIT_AUTHOR_NAME='Sandbox', GIT_AUTHOR_EMAIL='sandbox@invalid',
                    GIT_COMMITTER_NAME='Sandbox', GIT_COMMITTER_EMAIL='sandbox@invalid')
@@ -56,7 +57,7 @@ def invoke(args, *, cwd=None, capture=False, env=None, input_bytes=None):
 
 
 def git(repo, *args, capture=True, env=None, input_bytes=None):
-    return invoke(['git', '-C', str(repo), *args], capture=capture, env=env,
+    return invoke(['git', '-C', str(repo), '-c', 'core.hooksPath=/dev/null', *args], capture=capture, env=env,
                   input_bytes=input_bytes)
 
 

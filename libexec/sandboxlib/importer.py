@@ -4,7 +4,10 @@ from pathlib import Path
 import os
 import re
 import subprocess
+import uuid
 from .common import git, git_text
+from .commitmap import CommitMap, transfer_lock
+from .gitgraph import parts, refs, require_commit
 
 
 def host_env():
@@ -13,6 +16,8 @@ def host_env():
         if k.startswith(('GIT_AUTHOR_', 'GIT_COMMITTER_', 'GIT_CONFIG_', 'GIT_DIR',
                          'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_NAMESPACE')):
             del result[k]
+    result['GIT_NO_REPLACE_OBJECTS'] = '1'
+    result['GIT_ALLOW_PROTOCOL'] = 'file'
     return result
 
 
@@ -25,52 +30,15 @@ def identities(source, field, env):
 
 
 def load_map(path):
-    inverse = {}
-    for i, row in enumerate(path.read_text(encoding='ascii').splitlines()):
-        if i == 0 and row.split() == ['old', 'new']:
-            continue
-        fields = row.split()
-        if len(fields) != 2 or any(not re.fullmatch('[a-f0-9]{40,64}', x) for x in fields):
-            raise ValueError('invalid Git commit-map')
-        if int(fields[1], 16):
-            inverse[fields[1]] = fields[0]
-    if not inverse:
-        raise ValueError('empty commit-map')
-    return inverse
-
-
-def refs(repo, prefix, env):
-    raw = git(repo, 'for-each-ref', '--format=%(refname)%00%(objectname)', prefix, env=env)
-    result = {}
-    for line in raw.splitlines():
-        if line:
-            name, sha = line.decode('ascii').split('\0')
-            result[name] = sha
-    return result
-
-
-def parts(repo, oid, env):
-    raw = git(repo, 'cat-file', 'commit', oid, env=env)
-    head, sep, message = raw.partition(b'\n\n')
-    if not sep:
-        raise ValueError('bad commit object')
-    tree, parents, dates = None, [], {}
-    for line in head.splitlines():
-        if line.startswith(b'tree '):
-            tree = line[5:].decode('ascii')
-        elif line.startswith(b'parent '):
-            parents.append(line[7:].decode('ascii'))
-        elif line.startswith((b'author ', b'committer ')):
-            key = line.partition(b' ')[0].decode()
-            match = re.search(rb' (\d+) ([+-]\d{4})$', line)
-            if match:
-                dates[key] = (match.group(1) + b' ' + match.group(2)).decode()
-    if not tree or set(dates) != {'author', 'committer'}:
-        raise ValueError('invalid commit headers')
-    return tree, parents, dates, message
+    return CommitMap.load(path).to_host
 
 
 def import_branches(session: Path, meta: dict, *, force=False):
+    with transfer_lock(session):
+        return _import_branches(session, meta, force=force)
+
+
+def _import_branches(session: Path, meta: dict, *, force=False):
     source = Path(meta['source']).resolve(strict=True)
     repo = session / 'repo'
     env = host_env()
@@ -80,27 +48,28 @@ def import_branches(session: Path, meta: dict, *, force=False):
     if not sandbox_refs:
         raise ValueError('no sandbox branches to import')
     prefix = f'refs/heads/sandbox/{meta["name"]}/'
-    incoming = f'refs/sandbox/incoming/{meta["id"]}/'
+    incoming = f'refs/sandbox/incoming/{meta["id"]}/{uuid.uuid4().hex}/'
     existing = refs(source, prefix, env)
     if existing and not force:
         raise ValueError('review refs already exist; use --force to replace them')
     an, ae = identities(source, 'AUTHOR', env)
     cn, ce = identities(source, 'COMMITTER', env)
-    inverse = load_map(session / 'commit-map')
+    mapping = CommitMap.load(session / 'commit-map')
     # Copy objects via a local fetch. This NEVER modifies an original branch.
     try:
         git(source, 'fetch', '--no-tags', '--no-write-fetch-head', '--no-recurse-submodules',
-            str(repo), f'+refs/heads/*:{incoming}*', env=env)
+            '--no-auto-maintenance', str(repo), f'+refs/heads/*:{incoming}*', env=env)
         tips = refs(source, incoming, env)
-        if len(tips) != len(sandbox_refs):
-            raise ValueError('some sandbox branch refs were not transferred')
+        if {ref.removeprefix(incoming): tip for ref, tip in tips.items()} != {
+                ref.removeprefix('refs/heads/'): tip for ref, tip in sandbox_refs.items()}:
+            raise ValueError('sandbox branches changed during import; retry the operation')
         revs = git_text(source, 'rev-list', '--reverse', '--topo-order',
                         *[tips[x] for x in sorted(tips)], env=env).splitlines()
         rewritten = {}
         for oid in revs:
-            if oid in inverse:
-                original = inverse[oid]
-                git(source, 'cat-file', '-e', original + '^{commit}', env=env)
+            if oid in mapping.to_host:
+                original = mapping.to_host[oid]
+                require_commit(source, original, env, 'host')
                 rewritten[oid] = original
                 continue
             tree, parents, dates, message = parts(source, oid, env)
@@ -114,7 +83,8 @@ def import_branches(session: Path, meta: dict, *, force=False):
                            GIT_COMMITTER_NAME=cn, GIT_COMMITTER_EMAIL=ce,
                            GIT_AUTHOR_DATE=dates['author'], GIT_COMMITTER_DATE=dates['committer'])
             rewritten[oid] = git(source, 'commit-tree', tree, *translated,
-                                 env=new_env, input_bytes=message).decode().strip()
+                                  env=new_env, input_bytes=message).decode().strip()
+            mapping.add(rewritten[oid], oid)
         updates = []
         for ref, tip in sorted(tips.items()):
             branch = ref.removeprefix(incoming)
@@ -124,9 +94,10 @@ def import_branches(session: Path, meta: dict, *, force=False):
                     git_text(source, 'rev-parse', tip + '^{tree}', env=env)):
                 raise ValueError('tree mismatch for branch ' + branch)
             updates.append((destination, new_oid, existing.get(destination, '0' * len(new_oid))))
-        tx = b'start\0'
+        mapping.save(session / 'commit-map')
+        tx = b'start\0option no-deref\0'
         for ref, new_oid, old_oid in updates:
-            tx += f'update {ref}\0{new_oid}\0{old_oid}\0'.encode('ascii')
+            tx += f'update {ref}\0{new_oid}\0{old_oid}\0'.encode('utf-8', errors='surrogateescape')
         tx += b'prepare\0commit\0'
         git(source, 'update-ref', '--stdin', '-z', env=env, input_bytes=tx)
         return [ref.removeprefix('refs/heads/') for ref, _, _ in updates]

@@ -43,7 +43,7 @@ sandbox create ai-work ~/projects/my-repo --anonymize --skip-denylist
 sandbox run ai-work
 ```
 
-Anonymization and its checks happen **once during `sandbox create`**.
+Initial anonymization and its checks happen during `sandbox create`.
 The preparer rewrites historical Git authors/committers, checks the prepared
 repository for remotes and object alternates, and (unless skipped) scans its
 content against your denylist. `--skip-denylist` only skips that content scan;
@@ -51,12 +51,47 @@ it does not disable history rewriting or the preparation checks. No identity
 or denylist checks run during `sandbox run` or `sandbox exec`. Changes you make
 inside a sandbox afterward are your responsibility.
 
-`--skip-denylist` is a **creation-only** flag; it cannot be passed to `run`
-or `exec`. The import operation still uses the private commit mapping to
+`refresh` prepares and screens new incoming host history separately; it does not
+rescan existing sandbox work. `--skip-denylist` applies only to the explicit
+`create` or `refresh` invocation, never to `run` or `exec`.
+The import operation uses the private commit mapping to
 restore original ancestry before creating review branches with your host Git
 identity.
 
 The source repository must be clean at creation. `sandbox import` creates *review branches* in the original repository—it never merges or pushes. Commit changes inside the sandbox before importing. `sandbox destroy` removes the sandbox workspace and its named volumes, including application authentication and virtual environments.
+
+## Refresh a long-lived sandbox
+
+Bring committed host changes into an existing sandbox without replacing its
+checkout, worktrees, application data, or environments:
+
+```bash
+# On the host, after committing changes to main:
+sandbox refresh experiment --branch main
+
+# Inside the sandbox, in the branch/worktree you want to update:
+git merge host/main
+# Or: git switch -c integration host/main
+```
+
+Refresh updates only `refs/remotes/host/main`; it never merges, rebases, or changes
+working files. Dirty host files are ignored. Select each host branch explicitly;
+no live host remote or credentials are configured in the sandbox. Host history
+rewrites are allowed and reported as non-fast-forward updates.
+
+Import and refresh extend the host-only commit mapping in both directions, so
+accepted sandbox work returns as the same sandbox commits, and refreshed teammate
+commits import back as their exact originals. Sandbox local branches (including
+`main`) still import as `sandbox/NAME/BRANCH`; `host/main` is not exported as a
+branch, though its ancestors are included when merged into a local branch.
+
+Anonymized refresh uses the current private denylist by default, even if creation
+skipped it. Use `--denylist PATH` or explicitly `--skip-denylist` for that refresh.
+Neither option changes the policy of later invocations.
+
+After upgrading, reinstall the CLI and run `sandbox build preparer` explicitly;
+existing sandboxes and runtime images do not need rebuilding. See
+[refresh and upgrade details](docs/quickstart.md#refresh-from-the-host).
 
 ## Runtime images
 

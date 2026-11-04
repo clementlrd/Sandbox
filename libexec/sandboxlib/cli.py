@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
+from functools import partial
 import json
 import os
 import re
@@ -13,6 +14,8 @@ import uuid
 from .common import (check_name, config_dir, git_env, git_text, instances_dir,
                      mount_spec, private_dir, resource_dir)
 from .importer import import_branches
+from .commitmap import transfer_lock
+from .refresher import refresh_branch
 from .settings import read_only_mounts, load
 
 
@@ -110,6 +113,43 @@ def prepare_container(image, source, session, anonymize, deny, *, skip_denylist=
     if skip_denylist:
         args.append('--skip-denylist')
     call(args)
+
+
+def prepare_refresh_container(image, source, sandbox, mapping, output, tip, anonymize, deny,
+                              *, branch, skip_denylist=False):
+    args = preparer_common(image)[:-1]
+    args += ['--mount', mount_spec(source, '/source', True),
+             '--mount', mount_spec(sandbox, '/sandbox', True),
+             '--mount', mount_spec(mapping, '/private/commit-map', True),
+             '--mount', mount_spec(output, '/output')]
+    if anonymize and not skip_denylist:
+        args += ['--mount', mount_spec(deny, '/private/denylist.txt', True)]
+    args += [image, 'refresh', '--tip', tip, '--branch', branch]
+    if anonymize:
+        args.append('--anonymize')
+    if skip_denylist:
+        args.append('--skip-denylist')
+    call(args)
+
+
+def command_refresh(args, cfg):
+    path, meta = load_instance(args.name)
+    if args.skip_denylist and not meta['anonymized']:
+        raise ValueError('--skip-denylist requires an anonymized sandbox')
+    if args.skip_denylist and args.denylist:
+        raise ValueError('--skip-denylist cannot be combined with --denylist')
+    if args.denylist and not meta['anonymized']:
+        raise ValueError('--denylist requires an anonymized sandbox')
+    deny = denylist_path(args.denylist) if meta['anonymized'] and not args.skip_denylist else None
+    docker_rootless()
+    image = inspect_image(cfg['preparer']['image'])
+    result = refresh_branch(path, meta, args.branch, partial(prepare_refresh_container, image),
+                            denylist=deny, skip_denylist=args.skip_denylist)
+    if result['non_fast_forward']:
+        print('Warning: host history is not a fast-forward of the previous refresh.')
+    print(f'Refreshed host/{args.branch} -> {result["new"][:12]} '
+          f'(host {result["host_tip"][:12]}).')
+    print('No local branch or working files changed. Merge or cherry-pick the update explicitly.')
 
 
 def command_create(args, cfg):
@@ -379,6 +419,11 @@ def command_import(args, cfg):
 
 def command_destroy(args, cfg):
     path, meta = load_instance(args.name)
+    with transfer_lock(path):
+        destroy_instance(args, path, meta)
+
+
+def destroy_instance(args, path, meta):
     if not args.yes:
         raise ValueError('pass --yes to confirm permanent removal of the sandbox and its volumes')
     docker_rootless()
@@ -485,6 +530,13 @@ def parser():
     imp.add_argument('name')
     imp.add_argument('--force', action='store_true')
     imp.set_defaults(handler=command_import)
+    refresh = sub.add_parser('refresh', help='prepare a host branch as host/BRANCH without merging')
+    refresh.add_argument('name')
+    refresh.add_argument('--branch', required=True, help='explicit host local branch to refresh')
+    refresh.add_argument('--denylist', help='alternate private denylist for this refresh')
+    refresh.add_argument('--skip-denylist', action='store_true',
+                         help='skip incoming content screening, not identity rewriting')
+    refresh.set_defaults(handler=command_refresh)
     destroy = sub.add_parser('destroy', help='delete a sandbox and its volumes')
     destroy.add_argument('name')
     destroy.add_argument('--yes', action='store_true')

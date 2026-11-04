@@ -53,7 +53,7 @@ sandbox build python-xpu      # Intel GPU
 sandbox build python-cuda     # NVIDIA GPU, requires host NVIDIA toolkit
 ```
 
-`create`, `run`, `exec`, `setup` and `import` never build images. The `base`, `python-xpu`, and `python-cuda` images include `jq` and `tmux`. After building, verify with `sandbox exec dev -- jq --version` and `sandbox exec dev -- tmux -V`. `tmux` servers do not survive the removal of an ephemeral container. Their profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. NVIDIA CUDA users must configure the host toolkit first (see [CUDA setup](runtimes.md#nvidia-cuda-and-rootless-docker)). See [Runtimes](runtimes.md) for third-party images and caching.
+`create`, `refresh`, `run`, `exec`, `setup` and `import` never build images. The `base`, `python-xpu`, and `python-cuda` images include `jq` and `tmux`. After building, verify with `sandbox exec dev -- jq --version` and `sandbox exec dev -- tmux -V`. `tmux` servers do not survive the removal of an ephemeral container. Their profiles are declared explicitly in `config.toml`; delete or replace them as you prefer. NVIDIA CUDA users must configure the host toolkit first (see [CUDA setup](runtimes.md#nvidia-cuda-and-rootless-docker)). See [Runtimes](runtimes.md) for third-party images and caching.
 
 ## Create a named sandbox
 
@@ -65,7 +65,7 @@ sandbox inspect dev
 
 The source Git repository must be clean (no untracked/uncommitted changes) and have at least one commit. A prepared *independent* clone is stored under `$XDG_STATE_HOME/sandbox/instances/NAME/repo` (default `~/.local/state/sandbox/instances/NAME/repo`). No source remote is provided to the application container.
 
-For anonymization, add one private denylist term per line to `~/.config/sandbox/denylist.txt` (mode `0600`) and create with `--anonymize`. The preparer rewrites commit identities in a network-disabled container, saves the original/anonymous commit mapping *outside* the agent mount, and checks denylist terms during repository creation only. This is **best-effort**, not total anonymization.
+For anonymization, add one private denylist term per line to `~/.config/sandbox/denylist.txt` (mode `0600`) and create with `--anonymize`. The preparer rewrites commit identities in a network-disabled container, saves the original/anonymous commit mapping *outside* the agent mount, and checks denylist terms during repository creation. Refresh separately screens new incoming host history. This is **best-effort**, not total anonymization.
 
 An intentional identifier (such as the copyright holder in `LICENSE`) may
 trigger the denylist. You can skip **only the content scan at creation**:
@@ -77,8 +77,9 @@ sandbox run agent
 
 Identity rewriting and checks for Git remotes and object alternates still
 happen during creation. `run` and `exec` do **not** rerun any anonymization
-checks. The option cannot be supplied after creation; modifying the sandbox
-repository or adding a remote later is your responsibility. The denylist
+checks. The bypass is not saved as a policy: refresh requires its own explicit
+bypass if needed. Modifying the sandbox repository or adding a remote later is
+your responsibility. The denylist
 only detects known literal terms and is not a comprehensive privacy guarantee.
 
 ## Run commands
@@ -90,6 +91,64 @@ sandbox exec dev --runtime base -- python --version
 ```
 
 Use `--runtime NAME` to select another configured image. `sandbox run` starts an ephemeral container but the workspace and persistent volumes survive exit. No `--app` option is needed: run OpenCode, a shell, compiler or test command yourself.
+
+## Refresh from the host
+
+Keep the sandbox and its worktrees while bringing in committed changes from a
+selected local branch of the original host repository:
+
+```bash
+# On the host:
+sandbox refresh dev --branch main
+
+# Inside the sandbox, in the desired branch/worktree:
+git merge host/main
+# Alternatively, select commits or start a new local branch:
+# git cherry-pick <commit>
+# git switch -c integration host/main
+```
+
+`--branch` is required. Refresh captures that branch's tip, prepares it in the
+trusted Docker container, and updates only `refs/remotes/host/BRANCH`. It never
+merges, rebases, changes local branches, or touches working files. Uncommitted and
+untracked host files are ignored, so neither checkout needs to be clean. Existing
+containers, worktrees, volumes, and environments can remain in use.
+
+`host/main` is a tracking reference, not a local branch or a configured live
+remote. Avoid naming local branches `host/BRANCH`; refresh refuses that ambiguity.
+Inspect it with detached HEAD or create a local branch before making new commits.
+Host history rewrites update the tracking reference with a non-fast-forward
+warning; refresh does not reconcile rewritten history for you. Branches and tags
+are not automatically pruned, and tags are not refreshed.
+
+An anonymized sandbox always anonymizes unknown incoming commits. The current
+default denylist is applied unless you explicitly choose another list or bypass
+the content scan for this invocation:
+
+```bash
+sandbox refresh dev --branch main --denylist /private/denylist.txt
+sandbox refresh dev --branch main --skip-denylist
+```
+
+These options require an anonymized sandbox and cannot be combined. A creation
+bypass is not inherited. Existing sandbox-created history and working files are
+not rescanned. No identity/denylist checks are added to `run` or `exec`.
+
+### Upgrading existing sandboxes
+
+```bash
+./install.sh --no-tools
+sandbox build preparer
+```
+
+The updated worker must be rebuilt explicitly before the first refresh. There is
+no need to recreate sandboxes, rebuild runtime images, or migrate existing mapping
+files. New imports and refreshes grow the mapping automatically.
+
+Imports made before this version did not save new correspondences. Re-importing
+unchanged sandbox work (`sandbox import dev --force`) can record those pairs if
+the same host commit IDs are reproduced; changed host identities may prevent that.
+Refresh does not guess old correspondences from matching patches.
 
 ## Import, then destroy
 
@@ -103,6 +162,18 @@ sandbox destroy dev --yes
 ```
 
 Import recreates new agent commits using the host's configured author/committer and maps historical parents back where possible. It supports multiple branches and merges in tested cases; tags, submodules, Git LFS and various unusual Git states need more validation. Import is *not* a safe backup for uncommitted changes: commit them before importing.
+
+Every local sandbox branch is exported, including an unchanged `main`. A refreshed
+`host/main` is not exported as a branch, but its mapped ancestors are reused when
+reachable from local branches. This preserves the exact original host commits,
+including teammates' identities and signatures. Newly exported commits are added
+to the private mapping so a later refresh reuses their existing sandbox versions.
+
+Use `sandbox import dev --force` to replace existing review branch tips. After a
+sandbox rebase/amend, this replaces the old review history; it does not preserve
+backup branches automatically. Use your own branches or reflogs if needed. Mapping
+entries do not keep Git objects alive: if a required mapped object was removed by
+garbage collection, the operation fails explicitly instead of guessing ancestry.
 
 `destroy` permanently removes the sandbox's independent repository, recorded volumes, app data, cached app files and Python venvs. It does **not** delete the original source repository, your host tools, or Docker images/build cache. It refuses while labeled application containers are running.
 

@@ -4,7 +4,7 @@
 
 ```text
 bin/sandbox                    # user-facing launcher
-libexec/sandboxlib/            # CLI, config, Git preparation/preflight/import
+libexec/sandboxlib/            # CLI, config, Git preparation/preflight/import/refresh
 images/preparer/               # trusted no-network preparation worker
 images/base/                   # optional general-purpose Ubuntu runtime
 images/python-xpu/             # optional Intel XPU example runtime
@@ -25,7 +25,7 @@ python -m unittest discover -s tests -v
 bash -n install.sh tools/install-opencode.sh recipes/*.sh
 ```
 
-These tests cover configuration, Git history preparation/import, preflight, CLI argument construction, recipe confirmation and simulated pip reuse. Many tests execute *real local Git* operations. They do **not** launch rootless Docker or exercise a real GPU; those still need a separate integration test on Linux.
+These tests cover configuration, Git history preparation/import/refresh, preflight, CLI argument construction, recipe confirmation and simulated pip reuse. Many tests execute *real local Git* operations. Refresh tests invoke the same incremental worker locally and simulate initial filter-repo output without requiring that executable. They cover round trips, teammate attribution, merges, rewrites, missing objects, interrupted publication, and dirty/parallel worktrees. They do **not** launch rootless Docker or exercise a real GPU; those still need a separate integration test on Linux. If running the suite inside a sandbox, unset inherited `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity overrides so existing host-identity fixtures use their configured identities.
 
 ## GitHub Actions continuous integration
 
@@ -52,6 +52,17 @@ sandbox destroy smoke --yes
 ```
 
 Then test anonymized history with synthetic identities and a denylist; deliberately introduce a forbidden term into an old commit and ensure creation is blocked (later launches never scan). Test a custom runtime (`sandbox runtimes`, `sandbox build custom`, `sandbox run ... --runtime custom`), and an optional device-backed runtime on a host that actually has that device. Check app volume survival after an exit and deletion after `destroy`. Try setup recipes with synthetic credentials, never production tokens.
+
+For refresh, explicitly rebuild the preparer after installing updated code. In a
+disposable repository, create a sandbox and import a feature, accept it on the
+host, add a commit with a different test identity, then run
+`sandbox refresh NAME --branch main`. Merge `host/main` inside the sandbox, add
+work, and import again with `--force`. Verify exact host parent IDs and teammate
+authorship, unchanged working files/worktrees, and absence of original host
+identity objects in an anonymized sandbox. Repeat after a sandbox amend and a
+host history rewrite. Verify that refresh blocks new denied content before the
+live object store or tracking ref changes, including when creation skipped its
+scan. Runtime images need not be rebuilt.
 
 ## Adding a new runtime
 
